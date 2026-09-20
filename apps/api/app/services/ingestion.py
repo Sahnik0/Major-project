@@ -1,6 +1,6 @@
 import csv
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Tuple
 
 import chardet
 import polars as pl
@@ -107,7 +107,7 @@ def read_raw_dataframe(file_path: Path) -> pl.DataFrame:
 
 def inspect_raw_file(
     file_path: Path,
-) -> tuple[list[str], list[dict[str, Any]], int]:
+) -> Tuple[List[str], List[Dict[str, Any]], int]:
     """Inspect raw file columns, sample rows, and total row count."""
     df = read_raw_dataframe(file_path)
     columns = df.columns

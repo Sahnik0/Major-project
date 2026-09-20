@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import polars as pl
@@ -7,7 +7,7 @@ from apps.api.app.config import settings
 from apps.api.app.schemas.mapping import MappingConfirmationRequest
 
 
-def detect_date_format_ambiguity(df: pl.DataFrame, date_col: str) -> str | None:
+def detect_date_format_ambiguity(df: pl.DataFrame, date_col: str) -> Optional[str]:
     """
     Detect whether date column is predominantly dayfirst (DD-MM-YYYY) or monthfirst (MM-DD-YYYY).
     Returns 'dayfirst', 'monthfirst', 'iso', or 'ambiguous'.
@@ -46,7 +46,7 @@ def detect_date_format_ambiguity(df: pl.DataFrame, date_col: str) -> str | None:
 
 def parse_date_column(
     series: pl.Series,
-    date_preference: str | None = None,
+    date_preference: Optional[str] = None,
 ) -> pl.Series:
     """Parse a column into pl.Date with robust format matching."""
     if series.dtype in (pl.Date, pl.Datetime):
@@ -90,7 +90,7 @@ def parse_date_column(
     return series.cast(pl.Utf8).str.to_date(strict=False)
 
 
-def detect_outliers_iqr(series: pl.Series, multiplier: float = 3.0) -> tuple[pl.Series, float]:
+def detect_outliers_iqr(series: pl.Series, multiplier: float = 3.0) -> Tuple[pl.Series, float]:
     """
     Detect outliers using IQR on positive demand.
     Returns boolean series (True if outlier) and the upper threshold.
@@ -114,7 +114,7 @@ def clean_and_regularize_dataset(
     df: pl.DataFrame,
     mapping_config: MappingConfirmationRequest,
     dataset_id: str,
-) -> tuple[pl.DataFrame, dict[str, Any]]:
+) -> Tuple[pl.DataFrame, Dict[str, Any]]:
     """
     Executes Phase 1 data cleaning:
     1. Renames source columns to logical names.

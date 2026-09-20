@@ -4,6 +4,15 @@ from apps.api.app.schemas.dataset import (
     DatasetResponse,
     DatasetUploadResponse,
 )
+from apps.api.app.schemas.forecast import (
+    ForecastJobCreateRequest,
+    ForecastJobCreateResponse,
+    InventoryAdviceItem,
+    InventoryListResponse,
+    ProductDetailResponse,
+    ProductListResponse,
+    ProductSummaryItem,
+)
 from apps.api.app.schemas.health import (
     DataHealthReport,
     DataQualityIssue,
@@ -18,17 +27,24 @@ from apps.api.app.schemas.mapping import (
 from apps.api.app.schemas.settings import SettingsResponse, SettingsUpdateRequest
 
 __all__ = [
-    "ColumnMappingSuggestion",
-    "DataHealthReport",
-    "DataQualityIssue",
-    "DatasetListResponse",
     "DatasetResponse",
+    "DatasetListResponse",
     "DatasetUploadResponse",
-    "JobResponse",
+    "ColumnMappingSuggestion",
     "MappingConfirmationRequest",
     "MappingConfirmationResponse",
+    "SystemHealthResponse",
+    "DataHealthReport",
     "ProductClassStats",
+    "DataQualityIssue",
+    "JobResponse",
     "SettingsResponse",
     "SettingsUpdateRequest",
-    "SystemHealthResponse",
+    "ForecastJobCreateRequest",
+    "ForecastJobCreateResponse",
+    "ProductSummaryItem",
+    "ProductListResponse",
+    "ProductDetailResponse",
+    "InventoryAdviceItem",
+    "InventoryListResponse",
 ]

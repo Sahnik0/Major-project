@@ -51,3 +51,4 @@ flowchart TD
 ### 5. Insights & Narration (Phase 4)
 - Local Gemma LLM via Ollama generating plain-English summaries from a facts JSON.
 - Numeric validator rejecting any sentence with numbers not found in the ground truth facts.
+

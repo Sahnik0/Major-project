@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -18,14 +20,14 @@ class SettingsResponse(BaseModel):
 
 
 class SettingsUpdateRequest(BaseModel):
-    ollama_url: str | None = None
-    ollama_model: str | None = None
-    timesfm_version: str | None = Field(
+    ollama_url: Optional[str] = None
+    ollama_model: Optional[str] = None
+    timesfm_version: Optional[str] = Field(
         None,
         description="Must be '3.0' or '2.5'. 3.0 requires acknowledging non-commercial license.",
     )
-    default_country: str | None = None
-    default_service_level: float | None = None
-    default_lead_time_days: int | None = None
-    default_review_period_days: int | None = None
-    default_horizon: int | None = None
+    default_country: Optional[str] = None
+    default_service_level: Optional[float] = None
+    default_lead_time_days: Optional[int] = None
+    default_review_period_days: Optional[int] = None
+    default_horizon: Optional[int] = None

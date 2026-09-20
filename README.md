@@ -98,3 +98,4 @@ make up-cpu
 4. **Data Health Profiling:** Syntetos-Boylan demand classification (smooth, erratic, intermittent, lumpy, short_history, inactive).
 5. **Deterministic Inventory Advice:** Pure Python calculation of reorder points, safety stocks, and order quantities with zero hallucination.
 6. **AI Explanation & Validation:** Gemma local narration with strict number verification against factual data.
+

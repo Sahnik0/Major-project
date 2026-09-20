@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -23,7 +24,7 @@ class Settings(BaseSettings):
     # TimesFM
     TIMESFM_VERSION: str = "3.0"
     TIMESFM_REPO: str = "google/timesfm-3.0-pytorch"
-    HF_TOKEN: str | None = None
+    HF_TOKEN: Optional[str] = None
     HF_HUB_OFFLINE: int = 0
 
     # Ingestion & limits

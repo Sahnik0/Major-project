@@ -29,3 +29,4 @@ RUN mkdir -p /app/data/uploads /app/data/parquet /app/data/sqlite
 EXPOSE 8000
 
 CMD ["uvicorn", "apps.api.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+

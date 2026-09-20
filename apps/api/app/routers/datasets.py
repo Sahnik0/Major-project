@@ -1,5 +1,6 @@
 import uuid
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
@@ -30,7 +31,7 @@ router = APIRouter(prefix="/datasets", tags=["Datasets"])
 @router.post("", response_model=DatasetUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_dataset(
     file: UploadFile = File(...),
-    name: str | None = Form(None),
+    name: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ) -> DatasetUploadResponse:
     if not file.filename:
@@ -73,7 +74,7 @@ async def upload_dataset(
             status_code=400,
             detail={
                 "code": "CORRUPTED_FILE",
-                "message": f"Failed to parse uploaded dataset: {e!s}",
+                "message": f"Failed to parse uploaded dataset: {str(e)}",
                 "hint": "Ensure the file is not corrupted and has valid headers.",
             },
         )

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel
 
@@ -9,7 +10,7 @@ class JobResponse(BaseModel):
     job_type: str
     status: str
     progress: int
-    current_step: str | None = None
-    error: str | None = None
+    current_step: Optional[str] = None
+    error: Optional[str] = None
     created_at: datetime
     updated_at: datetime

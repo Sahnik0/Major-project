@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -7,12 +7,12 @@ from pydantic import BaseModel
 class ColumnSample(BaseModel):
     name: str
     dtype: str
-    sample_values: list[Any]
+    sample_values: List[Any]
 
 
 class ColumnMappingSuggestion(BaseModel):
     column_name: str
-    mapped_field: str | None = None
+    mapped_field: Optional[str] = None
     confidence: float = 0.0
     reason: str = ""
 
@@ -22,11 +22,11 @@ class DatasetUploadResponse(BaseModel):
     name: str
     original_filename: str
     status: str
-    detected_columns: list[str]
-    sample_rows: list[dict[str, Any]]
-    suggested_mapping: dict[str, str]
-    mapping_confidence: dict[str, float]
-    mapping_reasons: dict[str, str]
+    detected_columns: List[str]
+    sample_rows: List[Dict[str, Any]]
+    suggested_mapping: Dict[str, str]
+    mapping_confidence: Dict[str, float]
+    mapping_reasons: Dict[str, str]
     created_at: datetime
 
 
@@ -35,14 +35,14 @@ class DatasetResponse(BaseModel):
     name: str
     original_filename: str
     status: str
-    row_count: int | None = None
-    product_count: int | None = None
-    column_mapping: dict[str, str] | None = None
+    row_count: Optional[int] = None
+    product_count: Optional[int] = None
+    column_mapping: Optional[Dict[str, str]] = None
     created_at: datetime
     updated_at: datetime
-    error_message: str | None = None
+    error_message: Optional[str] = None
 
 
 class DatasetListResponse(BaseModel):
-    datasets: list[DatasetResponse]
+    datasets: List[DatasetResponse]
     total: int

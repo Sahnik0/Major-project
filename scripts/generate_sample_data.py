@@ -3,7 +3,7 @@ import json
 import random
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List
 
 import numpy as np
 
@@ -31,7 +31,7 @@ def generate_dataset():
     # 31-35: Lumpy
     # 36-38: Short history (introduced in last 45 days)
     # 39-40: Inactive / Discontinued (sales stopped >75 days before end)
-    products_meta: dict[str, dict[str, Any]] = {}
+    products_meta: Dict[str, Dict[str, Any]] = {}
 
     for i in range(1, 11):
         pid = f"PROD_{i:02d}"
@@ -106,7 +106,7 @@ def generate_dataset():
     }
 
     # Generate records
-    rows: list[dict[str, Any]] = []
+    rows: List[Dict[str, Any]] = []
     injected_outliers = 0
     injected_returns = 0
 

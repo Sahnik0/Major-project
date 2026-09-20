@@ -1,12 +1,14 @@
+from typing import Dict, Optional
+
 from pydantic import BaseModel, Field
 
 
 class MappingConfirmationRequest(BaseModel):
-    mapping: dict[str, str] = Field(
+    mapping: Dict[str, str] = Field(
         ...,
         description="Dictionary of logical field name to source column name. Must include 'date', 'product', 'quantity'.",
     )
-    date_format: str | None = Field(
+    date_format: Optional[str] = Field(
         default=None,
         description="Optional date parsing preference ('dayfirst', 'monthfirst', or explicit format).",
     )

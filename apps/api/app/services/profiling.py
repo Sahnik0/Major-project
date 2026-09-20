@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import polars as pl
@@ -16,10 +16,10 @@ def calculate_syntetos_boylan(
     quantities: np.ndarray,
     granularity: str = "daily",
     min_periods: int = 60,
-    dataset_max_date: date | None = None,
-    last_sale_date: date | None = None,
+    dataset_max_date: Optional[date] = None,
+    last_sale_date: Optional[date] = None,
     inactive_days: int = 60,
-) -> tuple[str, float, float]:
+) -> Tuple[str, float, float]:
     """
     Computes Syntetos-Boylan ADI and CV^2 and returns (series_class, adi, cv2).
     Every series is assigned exactly ONE class from:
@@ -85,7 +85,7 @@ def generate_data_health_report(
     cleaned_df: pl.DataFrame,
     dataset_id: str,
     dataset_name: str,
-    cleaning_meta: dict[str, Any],
+    cleaning_meta: Dict[str, Any],
 ) -> DataHealthReport:
     """
     Analyzes the regularized dataset to produce the complete data-health report.
@@ -104,8 +104,8 @@ def generate_data_health_report(
     total_days = (max_date - min_date).days + 1 if min_date and max_date else 0
 
     unique_products = cleaned_df["product"].unique().to_list()
-    product_stats_list: list[ProductClassStats] = []
-    class_distribution: dict[str, int] = {
+    product_stats_list: List[ProductClassStats] = []
+    class_distribution: Dict[str, int] = {
         "smooth": 0,
         "erratic": 0,
         "intermittent": 0,
@@ -162,7 +162,7 @@ def generate_data_health_report(
         )
 
     # Compile data quality issues with plain-English descriptions
-    issues: list[DataQualityIssue] = []
+    issues: List[DataQualityIssue] = []
 
     # 1. Duplicates
     dup_count = cleaning_meta.get("duplicate_count", 0)

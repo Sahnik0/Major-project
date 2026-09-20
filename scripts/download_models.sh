@@ -44,3 +44,4 @@ except Exception as e:
         print("    3. Ensure your HF_TOKEN is set in .env.", file=sys.stderr)
     sys.exit(1)
 EOF
+

@@ -1,4 +1,5 @@
 import re
+from typing import Dict, List, Tuple
 
 import polars as pl
 
@@ -139,7 +140,7 @@ def check_date_parse_rate(df: pl.DataFrame, col: str, max_samples: int = 100) ->
 
 def suggest_column_mapping_heuristics(
     df: pl.DataFrame,
-) -> tuple[dict[str, str], dict[str, float], dict[str, str]]:
+) -> Tuple[Dict[str, str], Dict[str, float], Dict[str, str]]:
     """
     Heuristically map raw dataframe columns to logical schema fields.
     Returns:
@@ -147,15 +148,15 @@ def suggest_column_mapping_heuristics(
         confidence: Dict[logical_field, float (0.0 - 1.0)]
         reasons: Dict[logical_field, str]
     """
-    suggested_mapping: dict[str, str] = {}
-    confidence: dict[str, float] = {}
-    reasons: dict[str, str] = {}
+    suggested_mapping: Dict[str, str] = {}
+    confidence: Dict[str, float] = {}
+    reasons: Dict[str, str] = {}
 
     norm_col_map = {col: _normalize_name(col) for col in df.columns}
     used_columns = set()
 
     # Score each (field, column) pair
-    scores: dict[str, list[tuple[str, float, str]]] = {field: [] for field in LOGICAL_FIELDS}
+    scores: Dict[str, List[Tuple[str, float, str]]] = {field: [] for field in LOGICAL_FIELDS}
 
     for col in df.columns:
         norm_col = norm_col_map[col]
@@ -220,7 +221,9 @@ def suggest_column_mapping_heuristics(
             elif field == "promo_flag":
                 # Check for boolean or 0/1 indicator
                 unique_vals = set(df[col].drop_nulls().head(50).to_list())
-                if unique_vals.issubset({0, 1, "0", "1", "true", "false", "Y", "N", "yes", "no"}):
+                if unique_vals.issubset(
+                    {0, 1, True, False, "0", "1", "true", "false", "Y", "N", "yes", "no"}
+                ):
                     score += 0.30
                     reason_parts.append("Binary indicator values")
 

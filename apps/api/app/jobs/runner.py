@@ -1,6 +1,6 @@
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict
 
 from sqlalchemy.orm import Session
 
@@ -14,7 +14,7 @@ from apps.api.app.services.profiling import generate_data_health_report
 def run_cleaning_and_profiling_sync(
     dataset_id: str,
     job_id: str,
-    mapping_config_dict: dict[str, Any],
+    mapping_config_dict: Dict[str, Any],
 ) -> None:
     """Synchronous worker that performs file reading, cleaning, profiling, and state updates."""
     db: Session = SessionLocal()
@@ -79,7 +79,7 @@ def run_cleaning_and_profiling_sync(
         if job:
             job.status = "failed"
             job.error = str(e)
-            job.current_step = f"Error: {e!s}"
+            job.current_step = f"Error: {str(e)}"
         if dataset:
             dataset.status = "error"
             dataset.error_message = str(e)
@@ -91,7 +91,7 @@ def run_cleaning_and_profiling_sync(
 async def enqueue_cleaning_and_profiling(
     dataset_id: str,
     job_id: str,
-    mapping_config_dict: dict[str, Any],
+    mapping_config_dict: Dict[str, Any],
 ) -> None:
     """Run cleaning & profiling asynchronously in a thread pool."""
     asyncio.create_task(

@@ -37,3 +37,4 @@ up-cpu:
 clean:
 	rm -rf data/uploads/* data/parquet/* data/sqlite/* .pytest_cache
 	touch data/uploads/.gitkeep data/parquet/.gitkeep data/sqlite/.gitkeep
+

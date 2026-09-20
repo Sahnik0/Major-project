@@ -45,3 +45,4 @@ Before forecasting, the system reviews your data for errors or patterns:
 
 ## 4. Privacy Guarantee
 All calculations, database storage, and AI summaries happen **locally on your machine**. Your customer records, pricing, and sales figures are never uploaded to any external cloud service.
+
