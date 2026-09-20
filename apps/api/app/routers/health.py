@@ -56,9 +56,12 @@ async def check_health() -> SystemHealthResponse:
     total, used, free = shutil.disk_usage(settings.DATA_DIR)
     disk_free_gb = round(free / (1024**3), 2)
 
-    # 4. TimesFM check & license warning
     timesfm_ready = False
-    # Check if weights exist in cache or HF token is provided
+    try:
+        import timesfm  # noqa: F401
+        timesfm_ready = True
+    except Exception:
+        timesfm_ready = False
     timesfm_warning = (
         "TimesFM 3.0 pretrained weights are licensed under the 'timesfm-non-commercial-license-v1.0' "
         "for non-commercial, research, and non-production use only. For commercial deployment, "

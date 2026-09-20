@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-
 import polars as pl
 
 
@@ -35,3 +34,4 @@ class Forecaster(ABC):
     ) -> ForecastPrediction:
         """Generates future predictions with point forecasts and quantile intervals."""
         pass
+

@@ -40,7 +40,8 @@ def run_forecast_job_sync(
         # Get product classification map from health report
         health_rep = dataset.health_report or {}
         prod_class_map = {
-            p["product"]: p.get("series_class", "smooth") for p in health_rep.get("products", [])
+            p["product"]: p.get("series_class", "smooth")
+            for p in health_rep.get("products", [])
         }
 
         unique_products = df["product"].unique().to_list()
@@ -53,7 +54,7 @@ def run_forecast_job_sync(
         for idx, prod in enumerate(unique_products):
             step_progress = int(10 + (idx / total_products) * 85)
             job.progress = step_progress
-            job.current_step = f"Forecasting product {idx + 1}/{total_products}: {prod}"
+            job.current_step = f"Forecasting product {idx+1}/{total_products}: {prod}"
             db.commit()
 
             p_df = df.filter(pl.col("product") == prod).sort("date")
@@ -91,6 +92,7 @@ def run_forecast_job_sync(
                 series_class=p_class,
                 horizon=req.horizon,
                 num_folds=req.num_folds,
+                include_timesfm=req.include_timesfm,
             )
 
             if not b_res:

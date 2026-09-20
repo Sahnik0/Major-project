@@ -275,3 +275,91 @@ def get_dataset_health(dataset_id: str, db: Session = Depends(get_db)) -> DataHe
         )
 
     return DataHealthReport(**dataset.health_report)
+
+
+@router.post("/sample", response_model=DatasetResponse, status_code=status.HTTP_201_CREATED)
+async def load_sample_dataset(db: Session = Depends(get_db)) -> DatasetResponse:
+    from apps.api.app.services.cleaning import clean_and_regularize_dataset
+    from apps.api.app.services.profiling import generate_data_health_report
+    from scripts.generate_sample_data import generate_dataset
+
+    sample_csv = settings.DATA_DIR / "sample_sales.csv"
+    if not sample_csv.exists():
+        generate_dataset()
+
+    dataset_id = str(uuid.uuid4())
+    dest_path = settings.UPLOAD_DIR / f"{dataset_id}_sample_sales.csv"
+    import shutil
+    shutil.copy(sample_csv, dest_path)
+
+    raw_df = read_raw_dataframe(dest_path)
+    mapping_req = MappingConfirmationRequest(
+        mapping={
+            "date": "Date",
+            "product": "Product_SKU",
+            "quantity": "Units_Sold",
+            "revenue": "Revenue",
+            "store": "Store_ID",
+            "promo_flag": "Promo_Flag",
+        },
+        date_format="iso",
+        drop_duplicates=False,
+        returns_handling="net",
+        aggregation_granularity="daily",
+    )
+
+    cleaned_df, cleaning_meta = clean_and_regularize_dataset(
+        df=raw_df,
+        mapping_config=mapping_req,
+        dataset_id=dataset_id,
+    )
+
+    health_report = generate_data_health_report(
+        cleaned_df=cleaned_df,
+        dataset_id=dataset_id,
+        dataset_name="Demo Retail Store (40 Products)",
+        cleaning_meta=cleaning_meta,
+    )
+
+    dataset = Dataset(
+        id=dataset_id,
+        name="Demo Retail Store (40 Products)",
+        original_filename="sample_sales.csv",
+        file_path=str(dest_path),
+        parquet_path=cleaning_meta["parquet_path"],
+        status="ready",
+        row_count=cleaning_meta["cleaned_row_count"],
+        product_count=cleaning_meta["unique_products"],
+        column_mapping=mapping_req.mapping,
+        health_report=health_report.model_dump(mode="json"),
+    )
+    db.add(dataset)
+    db.commit()
+    db.refresh(dataset)
+
+    return DatasetResponse(
+        id=dataset.id,
+        name=dataset.name,
+        original_filename=dataset.original_filename,
+        status=dataset.status,
+        row_count=dataset.row_count,
+        product_count=dataset.product_count,
+        column_mapping=dataset.column_mapping,
+        created_at=dataset.created_at,
+        updated_at=dataset.updated_at,
+        error_message=dataset.error_message,
+    )
+
+
+@router.get("/{dataset_id}/summary")
+async def get_dataset_business_summary(dataset_id: str, db: Session = Depends(get_db)):
+    from apps.api.app.services.insights import build_business_facts
+    from apps.api.app.services.narrator import generate_business_narrative
+
+    facts = build_business_facts(dataset_id, db)
+    if not facts:
+        return {"facts": {}, "narrative": "No forecast data available yet. Please run a forecast job first."}
+
+    narrative = await generate_business_narrative(facts)
+    return {"facts": facts, "narrative": narrative}
+

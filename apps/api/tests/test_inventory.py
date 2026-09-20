@@ -1,3 +1,4 @@
+import pytest
 from apps.api.app.services.inventory import compute_inventory_advice
 
 
@@ -102,3 +103,4 @@ def test_inventory_missing_stock_handling():
     assert res.stockout_risk == "unknown"
     assert res.recommended_order_qty is None
     assert "below 60 units" in res.advice_text
+

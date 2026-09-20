@@ -1,5 +1,4 @@
 import pytest
-
 from apps.api.app.services.forecasting.metrics import (
     interval_coverage,
     mase,
@@ -55,3 +54,4 @@ def test_interval_coverage_hand_calculated():
     # Index 2 (30 not in [32,35]) is not covered.
     # 4 out of 5 covered -> 0.80
     assert interval_coverage(y_true, lower, upper) == pytest.approx(0.80, rel=1e-5)
+

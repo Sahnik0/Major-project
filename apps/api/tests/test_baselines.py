@@ -1,5 +1,4 @@
 from datetime import date, timedelta
-
 import polars as pl
 import pytest
 
@@ -94,3 +93,4 @@ def test_historic_average_forecaster(sample_smooth_df):
 
     assert len(res.point_forecast) == 14
     assert res.confidence_label == "low_confidence"
+

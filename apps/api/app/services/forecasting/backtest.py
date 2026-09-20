@@ -1,10 +1,9 @@
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import polars as pl
 
-from apps.api.app.services.forecasting.base import ForecastPrediction
+from apps.api.app.services.forecasting.base import Forecaster, ForecastPrediction
 from apps.api.app.services.forecasting.metrics import (
     interval_coverage,
     mase,
@@ -42,6 +41,7 @@ def run_rolling_origin_backtest_for_product(
     horizon: int = 28,
     num_folds: int = 3,
     season_length: int = 7,
+    include_timesfm: bool = False,
 ) -> Optional[ProductBacktestResult]:
     """
     Executes rolling-origin backtest for a single product across suitable candidate models.
@@ -63,6 +63,7 @@ def run_rolling_origin_backtest_for_product(
         series_class=series_class,
         history_length=total_len,
         season_length=season_length,
+        include_timesfm=include_timesfm,
     )
 
     if not candidates:
@@ -102,16 +103,14 @@ def run_rolling_origin_backtest_for_product(
                 m_pb90 = pinball_loss(y_test, q90, 0.9)
                 m_cov = interval_coverage(y_test, q10, q90)
 
-                model_fold_results[model.name].append(
-                    {
-                        "wape": m_wape,
-                        "mase": m_mase,
-                        "pinball_loss_10": m_pb10,
-                        "pinball_loss_50": m_pb50,
-                        "pinball_loss_90": m_pb90,
-                        "interval_coverage_80": m_cov,
-                    }
-                )
+                model_fold_results[model.name].append({
+                    "wape": m_wape,
+                    "mase": m_mase,
+                    "pinball_loss_10": m_pb10,
+                    "pinball_loss_50": m_pb50,
+                    "pinball_loss_90": m_pb90,
+                    "interval_coverage_80": m_cov,
+                })
             except Exception:
                 # If model failed on fold, skip
                 continue
@@ -130,9 +129,7 @@ def run_rolling_origin_backtest_for_product(
                 pinball_loss_10=round(float(np.mean([f["pinball_loss_10"] for f in folds])), 4),
                 pinball_loss_50=round(float(np.mean([f["pinball_loss_50"] for f in folds])), 4),
                 pinball_loss_90=round(float(np.mean([f["pinball_loss_90"] for f in folds])), 4),
-                interval_coverage_80=round(
-                    float(np.mean([f["interval_coverage_80"] for f in folds])), 4
-                ),
+                interval_coverage_80=round(float(np.mean([f["interval_coverage_80"] for f in folds])), 4),
                 folds_evaluated=n_f,
             )
         )
@@ -167,3 +164,4 @@ def run_rolling_origin_backtest_for_product(
         metrics_table=[asdict(m) for m in metrics_summary],
         final_forecast=final_pred,
     )
+

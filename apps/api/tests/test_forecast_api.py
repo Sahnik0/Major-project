@@ -21,13 +21,12 @@ def client():
 def test_end_to_end_forecast_and_inventory_api(client: TestClient, tmp_path: Path):
     # 1. Create and upload a dataset with 2 products
     from datetime import date, timedelta
-
     start = date(2023, 1, 1)
     rows = ["Date,Product_SKU,Units_Sold,Revenue"]
     for i in range(70):
         dt = (start + timedelta(days=i)).isoformat()
-        rows.append(f"{dt},SKU_A,{10 + (i % 7)},100.0")
-        rows.append(f"{dt},SKU_B,{15 if i % 4 == 0 else 0},50.0")
+        rows.append(f"{dt},SKU_A,{10 + (i%7)},100.0")
+        rows.append(f"{dt},SKU_B,{15 if i%4==0 else 0},50.0")
 
     csv_file = tmp_path / "forecast_test.csv"
     csv_file.write_text("\n".join(rows))
@@ -45,12 +44,7 @@ def test_end_to_end_forecast_and_inventory_api(client: TestClient, tmp_path: Pat
     confirm_resp = client.put(
         f"/api/v1/datasets/{dataset_id}/mapping",
         json={
-            "mapping": {
-                "date": "Date",
-                "product": "Product_SKU",
-                "quantity": "Units_Sold",
-                "revenue": "Revenue",
-            },
+            "mapping": {"date": "Date", "product": "Product_SKU", "quantity": "Units_Sold", "revenue": "Revenue"},
             "date_format": "iso",
             "aggregation_granularity": "daily",
         },

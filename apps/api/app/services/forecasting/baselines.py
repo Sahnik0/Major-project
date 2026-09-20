@@ -1,16 +1,18 @@
 from datetime import date, timedelta
 from typing import Dict, List, Optional
-
 import numpy as np
 import pandas as pd
 import polars as pl
 from statsforecast import StatsForecast
 from statsforecast.models import (
-    TSB,
     AutoARIMA,
     AutoETS,
     CrostonClassic,
     CrostonSBA,
+    HistoricAverage,
+    Naive,
+    SeasonalNaive,
+    TSB,
 )
 
 from apps.api.app.services.forecasting.base import Forecaster, ForecastPrediction
@@ -59,9 +61,7 @@ class NaiveForecaster(Forecaster):
         self.y_train: np.ndarray = np.array([])
         self.last_date: Optional[date] = None
 
-    def fit(
-        self, df: pl.DataFrame, target_col: str = "quantity", date_col: str = "date"
-    ) -> "NaiveForecaster":
+    def fit(self, df: pl.DataFrame, target_col: str = "quantity", date_col: str = "date") -> "NaiveForecaster":
         self.y_train = df[target_col].to_numpy()
         self.last_value = float(self.y_train[-1]) if len(self.y_train) > 0 else 0.0
         dates = df[date_col].to_list()
@@ -95,9 +95,7 @@ class SeasonalNaiveForecaster(Forecaster):
         self.y_train: np.ndarray = np.array([])
         self.last_date: Optional[date] = None
 
-    def fit(
-        self, df: pl.DataFrame, target_col: str = "quantity", date_col: str = "date"
-    ) -> "SeasonalNaiveForecaster":
+    def fit(self, df: pl.DataFrame, target_col: str = "quantity", date_col: str = "date") -> "SeasonalNaiveForecaster":
         self.y_train = df[target_col].to_numpy()
         dates = df[date_col].to_list()
         self.last_date = dates[-1] if dates else date.today()
@@ -146,9 +144,7 @@ class HistoricAverageForecaster(Forecaster):
         self.y_train: np.ndarray = np.array([])
         self.last_date: Optional[date] = None
 
-    def fit(
-        self, df: pl.DataFrame, target_col: str = "quantity", date_col: str = "date"
-    ) -> "HistoricAverageForecaster":
+    def fit(self, df: pl.DataFrame, target_col: str = "quantity", date_col: str = "date") -> "HistoricAverageForecaster":
         self.y_train = df[target_col].to_numpy()
         self.mean_val = float(np.mean(self.y_train)) if len(self.y_train) > 0 else 0.0
         dates = df[date_col].to_list()
@@ -184,20 +180,16 @@ class StatsForecastBaseWrapper(Forecaster):
         self.last_date: Optional[date] = None
         self.y_train: np.ndarray = np.array([])
 
-    def fit(
-        self, df: pl.DataFrame, target_col: str = "quantity", date_col: str = "date"
-    ) -> "StatsForecastBaseWrapper":
+    def fit(self, df: pl.DataFrame, target_col: str = "quantity", date_col: str = "date") -> "StatsForecastBaseWrapper":
         self.y_train = df[target_col].to_numpy()
         dates = df[date_col].to_list()
         self.last_date = dates[-1] if dates else date.today()
 
-        self.df_pandas = pd.DataFrame(
-            {
-                "unique_id": ["series_1"] * len(df),
-                "ds": pd.to_datetime(df[date_col].to_list()),
-                "y": df[target_col].to_numpy().astype(np.float64),
-            }
-        )
+        self.df_pandas = pd.DataFrame({
+            "unique_id": ["series_1"] * len(df),
+            "ds": pd.to_datetime(df[date_col].to_list()),
+            "y": df[target_col].to_numpy().astype(np.float64),
+        })
         return self
 
     def predict(self, horizon: int, quantiles: Optional[List[float]] = None) -> ForecastPrediction:
@@ -226,21 +218,15 @@ class StatsForecastBaseWrapper(Forecaster):
             if lo_col in pred_df.columns and hi_col in pred_df.columns:
                 for q in quantiles:
                     if abs(q - 0.1) < 1e-4:
-                        q_dict[q] = [
-                            round(float(v), 2) for v in np.maximum(0.0, pred_df[lo_col].to_numpy())
-                        ]
+                        q_dict[q] = [round(float(v), 2) for v in np.maximum(0.0, pred_df[lo_col].to_numpy())]
                     elif abs(q - 0.9) < 1e-4:
-                        q_dict[q] = [
-                            round(float(v), 2) for v in np.maximum(0.0, pred_df[hi_col].to_numpy())
-                        ]
+                        q_dict[q] = [round(float(v), 2) for v in np.maximum(0.0, pred_df[hi_col].to_numpy())]
                     elif abs(q - 0.5) < 1e-4:
                         q_dict[q] = [round(float(v), 2) for v in point]
                     else:
                         # Interpolate
                         weight = (q - 0.1) / (0.9 - 0.1)
-                        interp = pred_df[lo_col].to_numpy() + weight * (
-                            pred_df[hi_col].to_numpy() - pred_df[lo_col].to_numpy()
-                        )
+                        interp = pred_df[lo_col].to_numpy() + weight * (pred_df[hi_col].to_numpy() - pred_df[lo_col].to_numpy())
                         q_dict[q] = [round(float(v), 2) for v in np.maximum(0.0, interp)]
             else:
                 # Empirical residual fallback
@@ -267,16 +253,12 @@ class StatsForecastBaseWrapper(Forecaster):
 
 class AutoETSForecaster(StatsForecastBaseWrapper):
     def __init__(self, season_length: int = 7):
-        super().__init__(
-            AutoETS(season_length=season_length), name="AutoETS", season_length=season_length
-        )
+        super().__init__(AutoETS(season_length=season_length), name="AutoETS", season_length=season_length)
 
 
 class AutoARIMAForecaster(StatsForecastBaseWrapper):
     def __init__(self, season_length: int = 7):
-        super().__init__(
-            AutoARIMA(season_length=season_length), name="AutoARIMA", season_length=season_length
-        )
+        super().__init__(AutoARIMA(season_length=season_length), name="AutoARIMA", season_length=season_length)
 
 
 class CrostonForecaster(StatsForecastBaseWrapper):
@@ -289,3 +271,4 @@ class CrostonForecaster(StatsForecastBaseWrapper):
 class TSBForecaster(StatsForecastBaseWrapper):
     def __init__(self, alpha_d: float = 0.2, alpha_p: float = 0.2):
         super().__init__(TSB(alpha_d=alpha_d, alpha_p=alpha_p), name="TSB", season_length=1)
+

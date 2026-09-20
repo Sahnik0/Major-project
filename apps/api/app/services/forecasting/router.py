@@ -1,5 +1,4 @@
 from typing import List
-
 from apps.api.app.services.forecasting.base import Forecaster
 from apps.api.app.services.forecasting.baselines import (
     AutoARIMAForecaster,
@@ -35,12 +34,18 @@ def get_candidate_models_for_class(
         if history_length >= 2 * season_length:
             candidates.append(AutoARIMAForecaster(season_length=season_length))
         candidates.append(NaiveForecaster())
+        if include_timesfm:
+            from apps.api.app.services.forecasting.timesfm_forecaster import TimesFMForecaster
+            candidates.append(TimesFMForecaster(series_class=series_class, season_length=season_length))
 
     elif series_class in ("intermittent", "lumpy"):
         candidates.append(CrostonForecaster(variant="classic"))
         candidates.append(CrostonForecaster(variant="sba"))
         candidates.append(TSBForecaster())
         candidates.append(NaiveForecaster())
+        if include_timesfm:
+            from apps.api.app.services.forecasting.timesfm_forecaster import TimesFMForecaster
+            candidates.append(TimesFMForecaster(series_class=series_class, season_length=season_length))
 
     elif series_class == "short_history":
         candidates.append(NaiveForecaster())
@@ -58,3 +63,4 @@ def get_candidate_models_for_class(
         candidates.append(NaiveForecaster())
 
     return candidates
+

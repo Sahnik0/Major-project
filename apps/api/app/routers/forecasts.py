@@ -3,7 +3,6 @@ import io
 import uuid
 from pathlib import Path
 from typing import List, Optional
-
 import polars as pl
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
@@ -23,11 +22,7 @@ from apps.api.app.schemas.forecast import (
 router = APIRouter(prefix="/datasets", tags=["Forecasts & Inventory"])
 
 
-@router.post(
-    "/{dataset_id}/forecast-jobs",
-    response_model=ForecastJobCreateResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
+@router.post("/{dataset_id}/forecast-jobs", response_model=ForecastJobCreateResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_forecast_job(
     dataset_id: str,
     req: ForecastJobCreateRequest,
@@ -93,10 +88,7 @@ def list_products(
 ) -> ProductListResponse:
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "DATASET_NOT_FOUND", "message": "Dataset not found", "hint": ""},
-        )
+        raise HTTPException(status_code=404, detail={"code": "DATASET_NOT_FOUND", "message": "Dataset not found", "hint": ""})
 
     forecasts = db.query(ProductForecast).filter(ProductForecast.dataset_id == dataset_id).all()
     if not forecasts:
@@ -168,10 +160,7 @@ def get_product_detail(
 ) -> ProductDetailResponse:
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "DATASET_NOT_FOUND", "message": "Dataset not found", "hint": ""},
-        )
+        raise HTTPException(status_code=404, detail={"code": "DATASET_NOT_FOUND", "message": "Dataset not found", "hint": ""})
 
     pf = (
         db.query(ProductForecast)
@@ -220,10 +209,7 @@ def get_inventory_recommendations(
 ) -> InventoryListResponse:
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "DATASET_NOT_FOUND", "message": "Dataset not found", "hint": ""},
-        )
+        raise HTTPException(status_code=404, detail={"code": "DATASET_NOT_FOUND", "message": "Dataset not found", "hint": ""})
 
     forecasts = db.query(ProductForecast).filter(ProductForecast.dataset_id == dataset_id).all()
     items: List[InventoryAdviceItem] = []

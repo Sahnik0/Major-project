@@ -1,21 +1,15 @@
+from datetime import datetime
 from typing import Any, Dict, List, Optional
-
 from pydantic import BaseModel, Field
 
 
 class ForecastJobCreateRequest(BaseModel):
     horizon: int = Field(default=28, ge=1, le=365, description="Forecast horizon in days/weeks")
     num_folds: int = Field(default=3, ge=1, le=10, description="Number of backtest folds")
-    service_level: float = Field(
-        default=0.90, ge=0.50, le=0.99, description="Target service level for safety stock"
-    )
+    service_level: float = Field(default=0.90, ge=0.50, le=0.99, description="Target service level for safety stock")
     lead_time_days: int = Field(default=7, ge=1, le=180, description="Supplier lead time in days")
-    review_period_days: int = Field(
-        default=7, ge=1, le=180, description="Order review period in days"
-    )
-    include_timesfm: bool = Field(
-        default=False, description="Include TimesFM in candidate models (Phase 3)"
-    )
+    review_period_days: int = Field(default=7, ge=1, le=180, description="Order review period in days")
+    include_timesfm: bool = Field(default=False, description="Include TimesFM in candidate models (Phase 3)")
 
 
 class ForecastJobCreateResponse(BaseModel):
@@ -73,3 +67,4 @@ class InventoryAdviceItem(BaseModel):
 class InventoryListResponse(BaseModel):
     items: List[InventoryAdviceItem]
     total_products: int
+

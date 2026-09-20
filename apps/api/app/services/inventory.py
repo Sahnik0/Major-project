@@ -1,7 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Optional, Sequence
-
+from typing import List, Optional, Sequence
 import numpy as np
 from scipy import stats
 
@@ -125,7 +124,8 @@ def compute_inventory_advice(
         else:
             recommended_qty = 0
             advice_text = (
-                f"Stock is healthy ({days_of_cover:.1f} days of cover). No order needed currently."
+                f"Stock is healthy ({days_of_cover:.1f} days of cover). "
+                f"No order needed currently."
             )
     else:
         # Missing current stock
@@ -159,3 +159,4 @@ def compute_inventory_advice(
         overstock_flag=overstock_flag,
         advice_text=advice_text,
     )
+

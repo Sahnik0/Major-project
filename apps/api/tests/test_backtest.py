@@ -1,6 +1,6 @@
 from datetime import date, timedelta
-
 import polars as pl
+import pytest
 
 from apps.api.app.services.forecasting.backtest import run_rolling_origin_backtest_for_product
 
@@ -43,3 +43,4 @@ def test_rolling_origin_backtest_inactive():
         series_class="inactive",
     )
     assert res is None
+

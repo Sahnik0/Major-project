@@ -1,5 +1,4 @@
 from typing import Sequence
-
 import numpy as np
 
 
@@ -93,3 +92,4 @@ def interval_coverage(
 
     covered = (yt >= lb - 1e-6) & (yt <= ub + 1e-6)
     return float(np.mean(covered))
+
