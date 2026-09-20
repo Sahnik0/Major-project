@@ -100,21 +100,21 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+      <div className="bg-[#212121] border border-[#333333] rounded-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl text-[#ececec]">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-[#2e2e2e] flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-bold text-white">
+            <h2 className="text-base font-semibold text-[#ececec]">
               {uploadData ? "Confirm Column Mapping" : "Upload Sales History"}
             </h2>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-[#b4b4b4]">
               {uploadData
                 ? "Verify how each column in your spreadsheet maps to sales fields."
                 : "Select or drop your CSV or Excel file (max 100 MB)."}
             </p>
           </div>
-          <button onClick={onClose} className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800">
+          <button onClick={onClose} className="p-1.5 text-[#8e8e8e] hover:text-[#ececec] rounded-lg hover:bg-[#2f2f2f]">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -122,7 +122,7 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
         {/* Content */}
         <div className="p-6 overflow-y-auto flex-1">
           {error && (
-            <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-xs flex items-center gap-2">
+            <div className="mb-4 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{error}</span>
             </div>
@@ -134,7 +134,7 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
               onDragOver={(e) => e.preventDefault()}
               onDrop={handleFileDrop}
               onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-slate-700 hover:border-blue-500 hover:bg-blue-500/5 rounded-2xl p-12 text-center cursor-pointer transition flex flex-col items-center justify-center gap-4 group"
+              className="border border-dashed border-[#383838] hover:border-[#555555] hover:bg-[#262626] rounded-2xl p-12 text-center cursor-pointer transition flex flex-col items-center justify-center gap-4 group"
             >
               <input
                 ref={fileInputRef}
@@ -143,14 +143,14 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
                 className="hidden"
                 onChange={(e) => e.target.files?.[0] && handleFileSelected(e.target.files[0])}
               />
-              <div className="w-16 h-16 rounded-2xl bg-slate-800 group-hover:bg-blue-600/20 flex items-center justify-center transition">
-                <Upload className="w-8 h-8 text-slate-400 group-hover:text-blue-400" />
+              <div className="w-12 h-12 rounded-xl bg-[#2a2a2a] flex items-center justify-center transition">
+                <Upload className="w-6 h-6 text-[#b4b4b4]" />
               </div>
               <div>
-                <h3 className="text-sm font-semibold text-white">
-                  {uploading ? "Analyzing File & Sniffing Delimiters..." : "Click or drag sales file here"}
+                <h3 className="text-sm font-medium text-[#ececec]">
+                  {uploading ? "Analyzing file & sniffing headers..." : "Click or drag sales file here"}
                 </h3>
-                <p className="text-xs text-slate-400 mt-1">Supports standard .csv and .xlsx spreadsheets</p>
+                <p className="text-xs text-[#8e8e8e] mt-1">Supports standard .csv and .xlsx spreadsheets</p>
               </div>
             </div>
           ) : (
@@ -158,14 +158,14 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               {/* Left: Sample Preview Table */}
               <div className="lg:col-span-7 flex flex-col gap-3">
-                <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
-                  <Table className="w-4 h-4 text-blue-400" />
+                <div className="flex items-center gap-2 text-xs font-semibold text-[#ececec]">
+                  <Table className="w-4 h-4 text-[#b4b4b4]" />
                   <span>Preview ({uploadData.sample_rows.length} sample rows)</span>
                 </div>
-                <div className="border border-slate-800 rounded-xl overflow-x-auto bg-slate-950/50 max-h-72">
+                <div className="border border-[#333333] rounded-xl overflow-x-auto bg-[#1a1a1a] max-h-72">
                   <table className="w-full text-left text-xs border-collapse">
                     <thead>
-                      <tr className="border-b border-slate-800 bg-slate-900/90 text-slate-400">
+                      <tr className="border-b border-[#333333] bg-[#242424] text-[#8e8e8e]">
                         {uploadData.detected_columns.map((col) => (
                           <th key={col} className="px-3 py-2 font-medium">
                             {col}
@@ -192,18 +192,18 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
               </div>
 
               {/* Right: Mapping Controls */}
-              <div className="lg:col-span-5 flex flex-col gap-4 bg-slate-950/40 p-4 rounded-xl border border-slate-800">
-                <span className="text-xs font-semibold text-slate-300">Logical Field Mapping</span>
+              <div className="lg:col-span-5 flex flex-col gap-4 bg-[#1e1e1e] p-4 rounded-xl border border-[#333333]">
+                <span className="text-xs font-semibold text-[#ececec]">Logical Field Mapping</span>
 
                 {/* Required: Date */}
                 <div>
-                  <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                  <label className="block text-[11px] font-medium text-[#b4b4b4] mb-1">
                     Date Column <span className="text-rose-400">*</span>
                   </label>
                   <select
                     value={mapping.date}
                     onChange={(e) => setMapping({ ...mapping, date: e.target.value })}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                    className="w-full bg-[#262626] border border-[#383838] rounded-lg px-2.5 py-1.5 text-xs text-[#ececec] focus:outline-none focus:border-[#555555]"
                   >
                     <option value="">-- Select column --</option>
                     {uploadData.detected_columns.map((c) => (
@@ -216,13 +216,13 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
 
                 {/* Required: Product */}
                 <div>
-                  <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                  <label className="block text-[11px] font-medium text-[#b4b4b4] mb-1">
                     Product / SKU Column <span className="text-rose-400">*</span>
                   </label>
                   <select
                     value={mapping.product}
                     onChange={(e) => setMapping({ ...mapping, product: e.target.value })}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                    className="w-full bg-[#262626] border border-[#383838] rounded-lg px-2.5 py-1.5 text-xs text-[#ececec] focus:outline-none focus:border-[#555555]"
                   >
                     <option value="">-- Select column --</option>
                     {uploadData.detected_columns.map((c) => (
@@ -235,13 +235,13 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
 
                 {/* Required: Quantity */}
                 <div>
-                  <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                  <label className="block text-[11px] font-medium text-[#b4b4b4] mb-1">
                     Sales Quantity Column <span className="text-rose-400">*</span>
                   </label>
                   <select
                     value={mapping.quantity}
                     onChange={(e) => setMapping({ ...mapping, quantity: e.target.value })}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                    className="w-full bg-[#262626] border border-[#383838] rounded-lg px-2.5 py-1.5 text-xs text-[#ececec] focus:outline-none focus:border-[#555555]"
                   >
                     <option value="">-- Select column --</option>
                     {uploadData.detected_columns.map((c) => (
@@ -253,13 +253,13 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
                 </div>
 
                 {/* Optional fields */}
-                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800">
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#333333]">
                   <div>
-                    <label className="block text-[10px] text-slate-400 mb-0.5">Revenue (Optional)</label>
+                    <label className="block text-[10px] text-[#8e8e8e] mb-0.5">Revenue (Optional)</label>
                     <select
                       value={mapping.revenue}
                       onChange={(e) => setMapping({ ...mapping, revenue: e.target.value })}
-                      className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-slate-300"
+                      className="w-full bg-[#262626] border border-[#383838] rounded px-2 py-1 text-xs text-[#ececec]"
                     >
                       <option value="">None</option>
                       {uploadData.detected_columns.map((c) => (
@@ -270,11 +270,11 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[10px] text-slate-400 mb-0.5">Promo Flag (Optional)</label>
+                    <label className="block text-[10px] text-[#8e8e8e] mb-0.5">Promo Flag (Optional)</label>
                     <select
                       value={mapping.promo_flag}
                       onChange={(e) => setMapping({ ...mapping, promo_flag: e.target.value })}
-                      className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-slate-300"
+                      className="w-full bg-[#262626] border border-[#383838] rounded px-2 py-1 text-xs text-[#ececec]"
                     >
                       <option value="">None</option>
                       {uploadData.detected_columns.map((c) => (
@@ -287,13 +287,13 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
                 </div>
 
                 {/* Options */}
-                <div className="pt-2 border-t border-slate-800 flex flex-col gap-2 text-xs">
+                <div className="pt-2 border-t border-[#333333] flex flex-col gap-2 text-xs">
                   <div className="flex items-center justify-between">
-                    <span className="text-slate-400">Date Format</span>
+                    <span className="text-[#8e8e8e]">Date Format</span>
                     <select
                       value={dateFormat}
                       onChange={(e) => setDateFormat(e.target.value)}
-                      className="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-slate-300"
+                      className="bg-[#262626] border border-[#383838] rounded px-2 py-1 text-xs text-[#ececec]"
                     >
                       <option value="auto">Auto Detect</option>
                       <option value="dayfirst">Day First (DD/MM/YYYY)</option>
@@ -306,9 +306,9 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
                       type="checkbox"
                       checked={dropDuplicates}
                       onChange={(e) => setDropDuplicates(e.target.checked)}
-                      className="rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-0"
+                      className="rounded border-[#383838] bg-[#262626] text-white focus:ring-0"
                     />
-                    <span className="text-slate-400 text-[11px]">Drop duplicate rows (default: aggregate)</span>
+                    <span className="text-[#8e8e8e] text-[11px]">Drop duplicate rows (default: aggregate)</span>
                   </label>
                 </div>
               </div>
@@ -318,22 +318,22 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
 
         {/* Footer */}
         {uploadData && (
-          <div className="px-6 py-4 border-t border-slate-800 flex items-center justify-end gap-3 bg-slate-900/90">
+          <div className="px-6 py-4 border-t border-[#2e2e2e] flex items-center justify-end gap-3 bg-[#1e1e1e]">
             <button
               onClick={() => {
                 setUploadData(null);
                 setFile(null);
               }}
-              className="px-4 py-2 text-xs font-medium rounded-lg text-slate-400 hover:text-white"
+              className="px-4 py-2 text-xs font-medium rounded-lg text-[#8e8e8e] hover:text-[#ececec]"
             >
               Back
             </button>
             <button
               onClick={handleConfirmMapping}
               disabled={confirming}
-              className="flex items-center gap-2 px-5 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-600/20 transition disabled:opacity-50"
+              className="flex items-center gap-2 px-5 py-2 text-xs font-semibold rounded-lg bg-white text-black hover:bg-neutral-200 transition disabled:opacity-50"
             >
-              {confirming ? "Regularizing Data..." : "Looks right, continue"}
+              {confirming ? "Regularizing Data..." : "Continue"}
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>

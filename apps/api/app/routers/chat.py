@@ -96,3 +96,4 @@ def reset_chat(dataset_id: str, db: Session = Depends(get_db)):
     db.query(ChatMessage).filter(ChatMessage.dataset_id == dataset_id).delete()
     db.commit()
     return {"status": "ok", "message": "Conversation reset."}
+

@@ -8,24 +8,21 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        border: "hsl(var(--border))",
-        background: "hsl(var(--background))",
-        foreground: "hsl(var(--foreground))",
-        primary: {
-          DEFAULT: "hsl(var(--primary))",
-          foreground: "hsl(var(--primary-foreground))",
-        },
-        muted: {
-          DEFAULT: "hsl(var(--muted))",
-          foreground: "hsl(var(--muted-foreground))",
-        },
-        accent: {
-          DEFAULT: "hsl(var(--accent))",
-          foreground: "hsl(var(--accent-foreground))",
+        chatgpt: {
+          main: "#212121",
+          sidebar: "#171717",
+          input: "#2f2f2f",
+          card: "#262626",
+          cardHover: "#2d2d2d",
+          border: "#333333",
+          borderSubtle: "#282828",
+          text: "#ececec",
+          muted: "#b4b4b4",
+          submuted: "#8e8e8e",
+          green: "#10a37e",
         },
       },
     },
   },
   plugins: [],
 }
-

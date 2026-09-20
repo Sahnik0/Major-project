@@ -433,3 +433,4 @@ async def _answer_general_query(
 
     text = await _call_gemma_with_facts(query, facts, fallback)
     return text, None, None
+

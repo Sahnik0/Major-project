@@ -78,6 +78,22 @@ export default function Home() {
         });
         if (j.status === "completed") {
           loadDatasets();
+          if (j.job_type === "cleaning_profiling" && j.dataset_id) {
+            api.startForecastJob(j.dataset_id, {
+              horizon: 28,
+              num_folds: 2,
+              service_level: 0.90,
+              lead_time_days: 7,
+              review_period_days: 7,
+            }).then((fJob) => {
+              setActiveJob({
+                id: fJob.job_id,
+                status: "processing",
+                progress: 10,
+                step: "Forecasting demand and computing reorder points...",
+              });
+            }).catch(console.error);
+          }
         }
       } catch (err) {
         console.error(err);
@@ -93,7 +109,7 @@ export default function Home() {
       const demo = await api.loadSampleDataset();
       await loadDatasets();
       setSelectedDatasetId(demo.id);
-      // Run forecast job on demo dataset if needed
+      // Run forecast job on demo dataset
       const fJob = await api.startForecastJob(demo.id, {
         horizon: 28,
         num_folds: 2,
@@ -105,7 +121,7 @@ export default function Home() {
         id: fJob.job_id,
         status: "processing",
         progress: 10,
-        step: "Forecasting demo catalog...",
+        step: "Forecasting products and backtesting...",
       });
     } catch (err) {
       console.error(err);
@@ -128,7 +144,7 @@ export default function Home() {
   const currentDataset = datasets.find((d) => d.id === selectedDatasetId) || null;
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans">
+    <div className="flex h-screen w-screen overflow-hidden bg-[#212121] text-[#ececec] font-sans">
       {/* Minimal Left Sidebar */}
       <Sidebar
         datasets={datasets}
@@ -144,12 +160,12 @@ export default function Home() {
       <main className="flex-1 flex flex-col h-screen overflow-hidden">
         {/* Job Notification Banner if running */}
         {activeJob && activeJob.status === "processing" && (
-          <div className="bg-blue-900/30 border-b border-blue-500/20 px-6 py-2.5 flex items-center justify-between text-xs text-blue-200">
+          <div className="bg-[#2a2a2a] border-b border-[#333333] px-6 py-2 flex items-center justify-between text-xs text-[#ececec]">
             <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
               <span>{activeJob.step || "Processing..."}</span>
             </div>
-            <span className="font-mono font-semibold">{activeJob.progress}%</span>
+            <span className="font-mono font-medium text-[#b4b4b4]">{activeJob.progress}%</span>
           </div>
         )}
 
