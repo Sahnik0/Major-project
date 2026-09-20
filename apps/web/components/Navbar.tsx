@@ -91,3 +91,4 @@ export function Navbar({ health, onOpenSettings, onOpenUpload, onLoadDemo, loadi
     </header>
   );
 }
+

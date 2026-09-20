@@ -209,3 +209,4 @@ class TimesFMForecaster(Forecaster):
             pred = fb.predict(horizon=horizon, quantiles=quantiles)
             pred.model_name = self.name + " (Fallback: " + fb.name + ")"
             return pred
+

@@ -116,3 +116,4 @@ export function InventoryView({ datasetId, inventoryItems }: InventoryViewProps)
     </div>
   );
 }
+

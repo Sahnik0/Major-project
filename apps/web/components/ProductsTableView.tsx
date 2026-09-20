@@ -152,3 +152,4 @@ export function ProductsTableView({ products, onSelectProduct }: ProductsTableVi
     </div>
   );
 }
+

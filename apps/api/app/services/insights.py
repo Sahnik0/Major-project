@@ -75,3 +75,4 @@ def build_business_facts(dataset_id: str, db: Session) -> Dict[str, Any]:
         "most_frequent_model": max(model_wins, key=model_wins.get) if model_wins else "None",
     }
     return facts
+

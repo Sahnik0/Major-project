@@ -135,3 +135,4 @@ async def generate_business_narrative(facts: Dict[str, Any]) -> str:
 
     # Fallback to deterministic template
     return deterministic_template_narrative(facts)
+

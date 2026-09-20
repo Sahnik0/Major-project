@@ -342,3 +342,4 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
     </div>
   );
 }
+

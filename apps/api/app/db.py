@@ -167,6 +167,30 @@ class AppSetting(Base):
     )
 
 
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    dataset_id = Column(String(36), ForeignKey("datasets.id"), nullable=False)
+    role = Column(String(20), nullable=False)  # "user" or "assistant" or "system"
+    content = Column(Text, nullable=False)
+    card_type = Column(String(50), nullable=True)  # e.g. "health_summary", "forecast_proof", "inventory_decision"
+    payload_json = Column(Text, nullable=True)
+    created_at = Column(
+        DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc), nullable=False
+    )
+
+    dataset = relationship("Dataset", backref="chat_messages")
+
+    @property
+    def payload(self) -> Any:
+        return json.loads(self.payload_json) if self.payload_json else None
+
+    @payload.setter
+    def payload(self, val: Any) -> None:
+        self.payload_json = json.dumps(val) if val is not None else None
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 

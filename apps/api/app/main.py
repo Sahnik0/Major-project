@@ -10,7 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from apps.api.app.config import settings
 from apps.api.app.db import init_db
-from apps.api.app.routers import datasets, forecasts, health, jobs
+from apps.api.app.routers import chat, datasets, forecasts, health, jobs
 from apps.api.app.routers import settings as app_settings
 
 logging.basicConfig(
@@ -119,6 +119,7 @@ app.include_router(health.router, prefix="/api/v1")
 app.include_router(datasets.router, prefix="/api/v1")
 app.include_router(forecasts.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
+app.include_router(chat.router, prefix="/api/v1")
 app.include_router(app_settings.router, prefix="/api/v1")
 
 # Convenience root health endpoint

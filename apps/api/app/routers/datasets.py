@@ -363,3 +363,17 @@ async def get_dataset_business_summary(dataset_id: str, db: Session = Depends(ge
     narrative = await generate_business_narrative(facts)
     return {"facts": facts, "narrative": narrative}
 
+
+@router.delete("/{dataset_id}")
+def delete_dataset(dataset_id: str, db: Session = Depends(get_db)):
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "DATASET_NOT_FOUND", "message": f"Dataset '{dataset_id}' not found."},
+        )
+    db.delete(dataset)
+    db.commit()
+    return {"status": "ok", "message": f"Dataset '{dataset_id}' deleted."}
+
+

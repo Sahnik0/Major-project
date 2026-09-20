@@ -175,3 +175,4 @@ export function DataHealthView({ report, onStartForecast, isForecasting }: DataH
     </div>
   );
 }
+
