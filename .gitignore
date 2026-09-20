@@ -1,0 +1,68 @@
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+
+# Python & Virtualenv
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Data directories (uploads, parquet, sqlite)
+data/uploads/*
+!data/uploads/.gitkeep
+data/parquet/*
+!data/parquet/.gitkeep
+data/sqlite/*
+!data/sqlite/.gitkeep
+data/*.csv
+data/*.parquet
+
+# Model caches
+.cache/
+hf_cache/
+
+# Testing & Linting
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Next.js
+apps/web/node_modules/
+apps/web/.next/
+apps/web/out/
+apps/web/.turbo/
+
+# System / Editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo

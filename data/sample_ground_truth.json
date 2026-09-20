@@ -1,0 +1,208 @@
+{
+  "total_rows": 18491,
+  "injected_duplicates": 30,
+  "injected_outliers": 15,
+  "injected_returns": 25,
+  "products": {
+    "PROD_01": {
+      "expected_class": "smooth",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_02": {
+      "expected_class": "smooth",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_03": {
+      "expected_class": "smooth",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_04": {
+      "expected_class": "smooth",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_05": {
+      "expected_class": "smooth",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_06": {
+      "expected_class": "smooth",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_07": {
+      "expected_class": "smooth",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_08": {
+      "expected_class": "smooth",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_09": {
+      "expected_class": "smooth",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_10": {
+      "expected_class": "smooth",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_11": {
+      "expected_class": "erratic",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_12": {
+      "expected_class": "erratic",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_13": {
+      "expected_class": "erratic",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_14": {
+      "expected_class": "erratic",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_15": {
+      "expected_class": "erratic",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_16": {
+      "expected_class": "erratic",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_17": {
+      "expected_class": "erratic",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_18": {
+      "expected_class": "erratic",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_19": {
+      "expected_class": "erratic",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_20": {
+      "expected_class": "erratic",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_21": {
+      "expected_class": "intermittent",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_22": {
+      "expected_class": "intermittent",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_23": {
+      "expected_class": "intermittent",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_24": {
+      "expected_class": "intermittent",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_25": {
+      "expected_class": "intermittent",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_26": {
+      "expected_class": "intermittent",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_27": {
+      "expected_class": "intermittent",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_28": {
+      "expected_class": "intermittent",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_29": {
+      "expected_class": "intermittent",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_30": {
+      "expected_class": "intermittent",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_31": {
+      "expected_class": "lumpy",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_32": {
+      "expected_class": "lumpy",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_33": {
+      "expected_class": "lumpy",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_34": {
+      "expected_class": "lumpy",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_35": {
+      "expected_class": "lumpy",
+      "active_start": "2022-01-01",
+      "active_end": "2023-12-31"
+    },
+    "PROD_36": {
+      "expected_class": "short_history",
+      "active_start": "2023-11-20",
+      "active_end": "2023-12-31"
+    },
+    "PROD_37": {
+      "expected_class": "short_history",
+      "active_start": "2023-11-20",
+      "active_end": "2023-12-31"
+    },
+    "PROD_38": {
+      "expected_class": "short_history",
+      "active_start": "2023-11-20",
+      "active_end": "2023-12-31"
+    },
+    "PROD_39": {
+      "expected_class": "inactive",
+      "active_start": "2022-01-01",
+      "active_end": "2023-09-15"
+    },
+    "PROD_40": {
+      "expected_class": "inactive",
+      "active_start": "2022-01-01",
+      "active_end": "2023-09-15"
+    }
+  }
+}

@@ -1,0 +1,87 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - ENVIRONMENT=production
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma3:4b}
+      - TIMESFM_VERSION=${TIMESFM_VERSION:-3.0}
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+      - DATA_DIR=/app/data
+      - DATABASE_URL=sqlite:////app/data/sqlite/advisor.db
+    volumes:
+      - ./data:/app/data
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  api-cpu:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    profiles:
+      - cpu
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - ENVIRONMENT=production
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma3:4b}
+      - TIMESFM_VERSION=${TIMESFM_VERSION:-3.0}
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+      - DATA_DIR=/app/data
+      - DATABASE_URL=sqlite:////app/data/sqlite/advisor.db
+    volumes:
+      - ./data:/app/data
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+    depends_on:
+      - api
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles:
+      - ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  ollama_data:

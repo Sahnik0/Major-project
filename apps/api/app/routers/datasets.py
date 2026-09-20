@@ -1,0 +1,276 @@
+import uuid
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from sqlalchemy.orm import Session
+
+from apps.api.app.config import settings
+from apps.api.app.db import Dataset, Job, get_db
+from apps.api.app.jobs.runner import enqueue_cleaning_and_profiling
+from apps.api.app.schemas.dataset import (
+    DatasetListResponse,
+    DatasetResponse,
+    DatasetUploadResponse,
+)
+from apps.api.app.schemas.health import DataHealthReport
+from apps.api.app.schemas.mapping import (
+    MappingConfirmationRequest,
+    MappingConfirmationResponse,
+)
+from apps.api.app.services.column_mapping import suggest_column_mapping_heuristics
+from apps.api.app.services.ingestion import (
+    inspect_raw_file,
+    read_raw_dataframe,
+    save_upload_stream,
+)
+
+router = APIRouter(prefix="/datasets", tags=["Datasets"])
+
+
+@router.post("", response_model=DatasetUploadResponse, status_code=status.HTTP_201_CREATED)
+async def upload_dataset(
+    file: UploadFile = File(...),
+    name: str | None = Form(None),
+    db: Session = Depends(get_db),
+) -> DatasetUploadResponse:
+    if not file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "MISSING_FILENAME",
+                "message": "Uploaded file must have a filename.",
+                "hint": "Check the file upload form.",
+            },
+        )
+
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in [".csv", ".xlsx", ".xls"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_FILE_TYPE",
+                "message": f"File type '{suffix}' is not supported. Please upload a .csv or .xlsx file.",
+                "hint": "Ensure your file is in standard CSV or Excel format.",
+            },
+        )
+
+    dataset_id = str(uuid.uuid4())
+    dataset_name = name.strip() if name and name.strip() else Path(file.filename).stem
+    safe_filename = f"{dataset_id}_{file.filename}"
+    dest_path = settings.UPLOAD_DIR / safe_filename
+
+    # Save streamed upload
+    await save_upload_stream(file, dest_path)
+
+    # Read and inspect raw file
+    try:
+        raw_df = read_raw_dataframe(dest_path)
+        detected_columns, sample_rows, total_rows = inspect_raw_file(dest_path)
+    except Exception as e:
+        if dest_path.exists():
+            dest_path.unlink()
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "CORRUPTED_FILE",
+                "message": f"Failed to parse uploaded dataset: {e!s}",
+                "hint": "Ensure the file is not corrupted and has valid headers.",
+            },
+        )
+
+    # Generate heuristic column mapping suggestions
+    suggested_mapping, confidences, reasons = suggest_column_mapping_heuristics(raw_df)
+
+    # Create dataset record
+    dataset = Dataset(
+        id=dataset_id,
+        name=dataset_name,
+        original_filename=file.filename,
+        file_path=str(dest_path),
+        status="mapping_pending",
+        row_count=total_rows,
+        column_mapping=suggested_mapping,
+    )
+    db.add(dataset)
+    db.commit()
+    db.refresh(dataset)
+
+    return DatasetUploadResponse(
+        id=dataset.id,
+        name=dataset.name,
+        original_filename=dataset.original_filename,
+        status=dataset.status,
+        detected_columns=detected_columns,
+        sample_rows=sample_rows,
+        suggested_mapping=suggested_mapping,
+        mapping_confidence=confidences,
+        mapping_reasons=reasons,
+        created_at=dataset.created_at,
+    )
+
+
+@router.get("", response_model=DatasetListResponse)
+def list_datasets(db: Session = Depends(get_db)) -> DatasetListResponse:
+    datasets = db.query(Dataset).order_by(Dataset.created_at.desc()).all()
+    return DatasetListResponse(
+        datasets=[
+            DatasetResponse(
+                id=d.id,
+                name=d.name,
+                original_filename=d.original_filename,
+                status=d.status,
+                row_count=d.row_count,
+                product_count=d.product_count,
+                column_mapping=d.column_mapping,
+                created_at=d.created_at,
+                updated_at=d.updated_at,
+                error_message=d.error_message,
+            )
+            for d in datasets
+        ],
+        total=len(datasets),
+    )
+
+
+@router.get("/{dataset_id}", response_model=DatasetResponse)
+def get_dataset(dataset_id: str, db: Session = Depends(get_db)) -> DatasetResponse:
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "DATASET_NOT_FOUND",
+                "message": f"Dataset '{dataset_id}' was not found.",
+                "hint": "Check the dataset ID.",
+            },
+        )
+    return DatasetResponse(
+        id=dataset.id,
+        name=dataset.name,
+        original_filename=dataset.original_filename,
+        status=dataset.status,
+        row_count=dataset.row_count,
+        product_count=dataset.product_count,
+        column_mapping=dataset.column_mapping,
+        created_at=dataset.created_at,
+        updated_at=dataset.updated_at,
+        error_message=dataset.error_message,
+    )
+
+
+@router.delete("/{dataset_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_dataset(dataset_id: str, db: Session = Depends(get_db)) -> None:
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "DATASET_NOT_FOUND",
+                "message": f"Dataset '{dataset_id}' was not found.",
+                "hint": "Check the dataset ID.",
+            },
+        )
+
+    # Delete physical files
+    if dataset.file_path and Path(dataset.file_path).exists():
+        Path(dataset.file_path).unlink()
+    if dataset.parquet_path and Path(dataset.parquet_path).exists():
+        Path(dataset.parquet_path).unlink()
+
+    db.delete(dataset)
+    db.commit()
+
+
+@router.put("/{dataset_id}/mapping", response_model=MappingConfirmationResponse)
+async def confirm_mapping(
+    dataset_id: str,
+    req: MappingConfirmationRequest,
+    db: Session = Depends(get_db),
+) -> MappingConfirmationResponse:
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "DATASET_NOT_FOUND",
+                "message": f"Dataset '{dataset_id}' was not found.",
+                "hint": "Upload a dataset before confirming mapping.",
+            },
+        )
+
+    # Validate required mapping fields
+    required_fields = ["date", "product", "quantity"]
+    for field in required_fields:
+        if field not in req.mapping or not req.mapping[field]:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "MISSING_MAPPING_FIELD",
+                    "message": f"Required logical field '{field}' is missing from the mapping.",
+                    "hint": f"Map source columns for {', '.join(required_fields)}.",
+                },
+            )
+
+    job_id = str(uuid.uuid4())
+    job = Job(
+        id=job_id,
+        dataset_id=dataset_id,
+        job_type="cleaning_profiling",
+        status="queued",
+        progress=0,
+        current_step="Queued for cleaning and profiling",
+    )
+    db.add(job)
+    dataset.status = "processing"
+    dataset.column_mapping = req.mapping
+    db.commit()
+
+    # Launch background cleaning and profiling task
+    await enqueue_cleaning_and_profiling(
+        dataset_id=dataset_id,
+        job_id=job_id,
+        mapping_config_dict=req.model_dump(),
+    )
+
+    return MappingConfirmationResponse(
+        dataset_id=dataset_id,
+        job_id=job_id,
+        status="queued",
+        message="Dataset mapping confirmed. Cleaning and health profiling started.",
+    )
+
+
+@router.get("/{dataset_id}/health", response_model=DataHealthReport)
+def get_dataset_health(dataset_id: str, db: Session = Depends(get_db)) -> DataHealthReport:
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "DATASET_NOT_FOUND",
+                "message": f"Dataset '{dataset_id}' was not found.",
+                "hint": "Check the dataset ID.",
+            },
+        )
+
+    if dataset.status == "processing":
+        raise HTTPException(
+            status_code=202,
+            detail={
+                "code": "PROCESSING",
+                "message": "Dataset cleaning and health profiling is currently in progress.",
+                "hint": "Poll the job status endpoint /jobs/{id} until completed.",
+            },
+        )
+
+    if not dataset.health_report:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "HEALTH_REPORT_UNAVAILABLE",
+                "message": f"Data health report is not available for dataset status '{dataset.status}'.",
+                "hint": "Confirm column mapping to trigger dataset processing.",
+            },
+        )
+
+    return DataHealthReport(**dataset.health_report)
