@@ -51,11 +51,18 @@ def run_forecast_job_sync(
         db.query(ProductForecast).filter(ProductForecast.dataset_id == dataset_id).delete()
         db.commit()
 
+        # Determine dynamic frequency and horizon from health report
+        freq_code = health_rep.get("frequency_code", "D")
+        if not freq_code:
+            gran = health_rep.get("granularity", "daily")
+            freq_code = "W" if gran == "weekly" else ("M" if gran == "monthly" else "D")
+
+        default_horizons = {"D": 28, "W": 8, "M": 3}
+        effective_horizon = req.horizon if req.horizon != 28 else default_horizons.get(freq_code, 28)
+
         for idx, prod in enumerate(unique_products):
-            step_progress = int(10 + (idx / total_products) * 85)
             step_progress = int(25 + (idx / total_products) * 70)
             job.progress = step_progress
-            job.current_step = f"Forecasting product {idx+1}/{total_products}: {prod}"
             job.current_step = f"Evaluating TimesFM & baselines for {prod} ({idx+1}/{total_products})..."
             db.commit()
 
@@ -87,14 +94,15 @@ def run_forecast_job_sync(
                 db.commit()
                 continue
 
-            # Run rolling origin backtesting & final model prediction
+            # Run rolling origin backtesting & final model prediction with dynamic frequency
             b_res = run_rolling_origin_backtest_for_product(
                 df_product=p_df,
                 product_name=str(prod),
                 series_class=p_class,
-                horizon=req.horizon,
+                horizon=effective_horizon,
                 num_folds=req.num_folds,
                 include_timesfm=req.include_timesfm,
+                freq=freq_code,
             )
 
             if not b_res:

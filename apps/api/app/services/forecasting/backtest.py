@@ -42,6 +42,7 @@ def run_rolling_origin_backtest_for_product(
     num_folds: int = 3,
     season_length: int = 7,
     include_timesfm: bool = False,
+    freq: str = "D",
 ) -> Optional[ProductBacktestResult]:
     """
     Executes rolling-origin backtest for a single product across suitable candidate models.
@@ -52,9 +53,18 @@ def run_rolling_origin_backtest_for_product(
     df_sorted = df_product.sort("date")
     total_len = len(df_sorted)
 
+    # Dynamically adjust season length based on frequency if default
+    if season_length == 7 and freq.upper() != "D":
+        if freq.upper().startswith("W"):
+            season_length = 4
+        elif freq.upper().startswith("M"):
+            season_length = 12
+        else:
+            season_length = 1
+
     # Determine feasible horizon and folds
-    effective_horizon = min(horizon, max(7, total_len // 4)) if total_len < horizon * 2 else horizon
-    min_train = max(7, season_length * 2) if total_len >= season_length * 2 else 5
+    effective_horizon = min(horizon, max(4 if freq.upper() != "D" else 7, total_len // 4)) if total_len < horizon * 2 else horizon
+    min_train = max(4 if freq.upper() != "D" else 7, season_length * 2) if total_len >= season_length * 2 else 3
 
     # Compute feasible number of folds
     feasible_folds = min(num_folds, max(1, (total_len - min_train) // effective_horizon))
@@ -64,6 +74,7 @@ def run_rolling_origin_backtest_for_product(
         history_length=total_len,
         season_length=season_length,
         include_timesfm=include_timesfm,
+        freq=freq,
     )
 
     if not candidates:

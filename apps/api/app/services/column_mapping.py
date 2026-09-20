@@ -115,7 +115,7 @@ def _normalize_name(name: str) -> str:
 
 
 def check_date_parse_rate(df: pl.DataFrame, col: str, max_samples: int = 100) -> float:
-    """Estimate the percentage of values in a column that can be parsed as dates."""
+    """Dynamically estimate the percentage of values in a column that can be parsed as dates."""
     sample_series = df[col].drop_nulls().head(max_samples)
     if len(sample_series) == 0:
         return 0.0
@@ -124,18 +124,21 @@ def check_date_parse_rate(df: pl.DataFrame, col: str, max_samples: int = 100) ->
     if sample_series.dtype in (pl.Date, pl.Datetime):
         return 1.0
 
-    parsed_count = 0
-    date_patterns = [
-        r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}",  # 2023-01-01 or 2023/01/01
-        r"^\d{1,2}[-/]\d{1,2}[-/]\d{4}",  # 01-01-2023 or 01/01/2023
-        r"^\d{4}\d{2}\d{2}$",  # 20230101
-    ]
-    str_vals = [str(x).strip() for x in sample_series.to_list()]
-    for val in str_vals:
-        if any(re.match(pat, val) for pat in date_patterns):
-            parsed_count += 1
+    import pandas as pd
 
-    return parsed_count / len(str_vals)
+    try:
+        p_s = sample_series.to_pandas()
+        if pd.api.types.is_numeric_dtype(p_s):
+            max_val = p_s.max()
+            if max_val is not None and (max_val > 1e8 or (20000 <= max_val <= 80000)):
+                return 1.0
+            return 0.0
+
+        parsed = pd.to_datetime(p_s, errors="coerce", format="mixed")
+        valid = parsed.notnull().sum()
+        return float(valid) / len(p_s)
+    except Exception:
+        return 0.0
 
 
 def suggest_column_mapping_heuristics(

@@ -22,7 +22,6 @@ export default function Home() {
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<ProductDetail | null>(null);
-  const [loadingDemo, setLoadingDemo] = useState(false);
 
   // Active Job Polling
   const [activeJob, setActiveJob] = useState<{ id: string; status: string; progress: number; step: string } | null>(null);
@@ -107,34 +106,6 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [activeJob]);
 
-  // Load Demo Data
-  const handleLoadDemo = async () => {
-    setLoadingDemo(true);
-    try {
-      const demo = await api.loadSampleDataset();
-      await loadDatasets();
-      setSelectedDatasetId(demo.id);
-      // Run forecast job on demo dataset
-      const fJob = await api.startForecastJob(demo.id, {
-        horizon: 28,
-        num_folds: 2,
-        service_level: 0.90,
-        lead_time_days: 7,
-        review_period_days: 7,
-      });
-      setActiveJob({
-        id: fJob.job_id,
-        status: "processing",
-        progress: 10,
-        step: "Forecasting products and backtesting...",
-      });
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingDemo(false);
-    }
-  };
-
   // Inspect a specific product
   const handleInspectProduct = async (productName: string) => {
     if (!selectedDatasetId) return;
@@ -206,8 +177,6 @@ export default function Home() {
           dataset={currentDataset}
           onOpenUpload={() => setIsUploadOpen(true)}
           onDirectUpload={handleDirectFileUpload}
-          onLoadDemo={handleLoadDemo}
-          isLoadingDemo={loadingDemo}
           onInspectProduct={handleInspectProduct}
           onViewAllProducts={() => {
             // Pick first product to inspect

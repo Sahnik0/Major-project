@@ -28,8 +28,6 @@ interface ChatInterfaceProps {
   dataset: DatasetItem | null;
   onOpenUpload: () => void;
   onDirectUpload: (file: File) => void;
-  onLoadDemo: () => void;
-  isLoadingDemo: boolean;
   onInspectProduct: (productName: string) => void;
   onViewAllProducts: () => void;
 }
@@ -38,8 +36,6 @@ export function ChatInterface({
   dataset,
   onOpenUpload,
   onDirectUpload,
-  onLoadDemo,
-  isLoadingDemo,
   onInspectProduct,
   onViewAllProducts,
 }: ChatInterfaceProps) {
@@ -127,7 +123,6 @@ export function ChatInterface({
 
         {/* Upload Dropzone */}
         <div
-          onClick={onOpenUpload}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             e.preventDefault();
@@ -155,17 +150,6 @@ export function ChatInterface({
               AI automatically understands your columns, runs TimesFM & baselines, and generates recommendations
             </p>
           </div>
-        </div>
-
-        <div className="flex items-center gap-3 w-full justify-center pt-1">
-          <span className="text-[#676767] text-xs">or</span>
-          <button
-            onClick={onLoadDemo}
-            disabled={isLoadingDemo}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium bg-[#2a2a2a] hover:bg-[#333333] border border-[#383838] text-[#ececec] transition"
-          >
-            <span>{isLoadingDemo ? "Loading Demo..." : "Try with 40-product demo dataset"}</span>
-          </button>
         </div>
 
         <div className="pt-6 flex items-center gap-6 text-[11px] text-[#8e8e8e] justify-center">
@@ -229,16 +213,12 @@ export function ChatInterface({
                 }`}
               >
                 {/* Assistant Message Header (Minimal monochrome) */}
-                {/* Assistant Message Header (Minimal monochrome) */}
                 {m.role === "assistant" && (
                   <div className="flex items-center gap-2 text-[11px] text-[#8e8e8e] mb-1">
                     <span className="font-semibold text-[#ececec]">Stock Advisor</span>
                   </div>
                 )}
 
-                {/* Plain Text Body */}
-                <div className="whitespace-pre-line text-[#ececec] leading-relaxed">
-                  {m.content}
                 {/* Markdown Body */}
                 <div className="text-[#ececec] leading-relaxed text-xs">
                   <ReactMarkdown
@@ -261,25 +241,12 @@ export function ChatInterface({
 
                 {/* Step 1: Clean & Check Data Card */}
                 {m.card_type === "health_summary" && m.payload && (
-                  <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-2.5 mt-2">
                   <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-3 mt-2">
                     <div className="flex items-center justify-between text-[11px] text-[#8e8e8e]">
-                      <span className="font-medium text-[#ececec]">Syntetos-Boylan Demand Quadrant</span>
-                      <span>{m.payload.total_products} products</span>
                       <span className="font-medium text-[#ececec]">Data Health & Schema</span>
                       <span>{m.payload.total_products} products • {m.payload.total_days} days</span>
                     </div>
 
-                    <div className="grid grid-cols-3 gap-1.5 text-[11px]">
-                      {Object.entries(m.payload.class_distribution || {}).map(([cls, count]) => (
-                        <div
-                          key={cls}
-                          className="bg-[#212121] px-2.5 py-1.5 rounded-lg border border-[#2e2e2e] flex items-center justify-between"
-                        >
-                          <span className="capitalize text-[#b4b4b4] text-[10px]">{cls}</span>
-                          <span className="font-semibold text-[#ececec]">{count as number}</span>
-                        </div>
-                      ))}
                     {/* Mapped Columns Pills */}
                     {m.payload.column_mapping && (
                       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
@@ -312,11 +279,9 @@ export function ChatInterface({
 
                 {/* Step 2: Forecast Proof Card */}
                 {m.card_type === "forecast_proof" && m.payload && (
-                  <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-2.5 mt-2">
                   <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-3 mt-2">
                     <div className="flex items-center justify-between text-[11px] text-[#8e8e8e]">
                       <span className="font-medium text-[#ececec]">Honest Backtest Scoreboard</span>
-                      <span className="font-mono text-[10px]">WAPE ~{m.payload.average_error_pct}%</span>
                       <span className="font-mono text-[10px]">Avg WAPE: ~{m.payload.average_error_pct}%</span>
                     </div>
 
@@ -328,7 +293,6 @@ export function ChatInterface({
                           className="bg-[#212121] px-2.5 py-2 rounded-lg border border-[#2e2e2e]"
                         >
                           <span className="text-[10px] text-[#8e8e8e] block truncate">{model}</span>
-                          <span className="text-xs font-semibold text-emerald-400 mt-0.5 block">{count as number} items</span>
                           <span className="text-xs font-semibold text-emerald-400 mt-0.5 block">{count as number} won</span>
                         </div>
                       ))}
@@ -498,10 +462,8 @@ export function ChatInterface({
             />
             <button
               type="button"
-              onClick={onOpenUpload}
               onClick={() => chatFileInputRef.current?.click()}
               className="p-1.5 rounded-full text-[#8e8e8e] hover:text-[#ececec] hover:bg-[#383838] transition"
-              title="Upload new file"
               title="Upload sales spreadsheet"
             >
               <Paperclip className="w-4 h-4" />

@@ -48,46 +48,78 @@ def parse_date_column(
     series: pl.Series,
     date_preference: Optional[str] = None,
 ) -> pl.Series:
-    """Parse a column into pl.Date with robust format matching."""
+    """
+    Dynamically parses any time or date format into pl.Date without hardcoded format restrictions.
+    Handles:
+    - ISO 8601 strings and datetimes with/without timezones
+    - Mixed date formats in the same series
+    - Textual dates (e.g. '15-Jan-2023', 'Oct 12, 2023')
+    - Excel serial numbers (e.g. 44927)
+    - Unix epoch timestamps in seconds or milliseconds
+    - Various separators (-, /, ., space)
+    """
     if series.dtype in (pl.Date, pl.Datetime):
         return series.cast(pl.Date)
 
-    # First try default polars string to date (ISO etc.)
+    import pandas as pd
+
     try:
-        parsed = series.str.to_date(strict=False)
-        if parsed.null_count() < len(series) * 0.1:
-            return parsed
+        p_s = series.to_pandas()
+        if pd.api.types.is_numeric_dtype(p_s):
+            max_val = p_s.max()
+            if max_val is not None and max_val > 1e11:
+                dt = pd.to_datetime(p_s, unit="ms", errors="coerce")
+            elif max_val is not None and max_val > 1e8:
+                dt = pd.to_datetime(p_s, unit="s", errors="coerce")
+            elif max_val is not None and 20000 <= max_val <= 80000:
+                dt = pd.to_datetime(p_s, unit="D", origin="1899-12-30", errors="coerce")
+            else:
+                dt = pd.to_datetime(p_s.astype(str), errors="coerce", format="mixed")
+        else:
+            dayfirst = True if date_preference == "dayfirst" else False
+            dt = pd.to_datetime(p_s, errors="coerce", format="mixed", dayfirst=dayfirst, utc=True)
+
+        if hasattr(dt.dt, "tz") and dt.dt.tz is not None:
+            dt = dt.dt.tz_localize(None)
+
+        parsed_dates = dt.dt.date
+        return pl.Series(series.name, parsed_dates).cast(pl.Date)
     except Exception:
-        pass
+        # Fallback to general polars parsing
+        return series.cast(pl.Utf8).str.to_date(strict=False)
 
-    # Try specific formats based on preference
-    formats = []
-    if date_preference == "dayfirst":
-        formats = ["%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y", "%Y-%m-%d", "%Y/%m/%d"]
-    elif date_preference == "monthfirst":
-        formats = ["%m-%d-%Y", "%m/%d/%Y", "%m-%d-%y", "%m/%d/%y", "%Y-%m-%d", "%Y/%m/%d"]
+
+def infer_natural_frequency(series: pl.Series) -> Tuple[str, str]:
+    """
+    Dynamically infers the time granularity of historical dates without hardcoding.
+    Returns:
+        interval: Polars date_range interval string ('1d', '1w', '1mo')
+        freq_code: Pandas/TimesFM frequency code ('D', 'W', 'M')
+    """
+    unique_dates = series.drop_nulls().unique().sort().to_list()
+    if len(unique_dates) < 2:
+        return "1d", "D"
+
+    deltas = []
+    for i in range(len(unique_dates) - 1):
+        d1 = unique_dates[i]
+        d2 = unique_dates[i + 1]
+        diff_days = (d2 - d1).days
+        if diff_days > 0:
+            deltas.append(diff_days)
+
+    if not deltas:
+        return "1d", "D"
+
+    median_delta = float(np.median(deltas))
+    if median_delta <= 2:
+        return "1d", "D"
+    elif 5 <= median_delta <= 10:
+        return "1w", "W"
+    elif 25 <= median_delta <= 35:
+        return "1mo", "M"
     else:
-        # Standard search order
-        formats = [
-            "%Y-%m-%d",
-            "%Y/%m/%d",
-            "%d-%m-%Y",
-            "%d/%m/%Y",
-            "%m-%d-%Y",
-            "%m/%d/%Y",
-            "%Y%m%d",
-        ]
-
-    for fmt in formats:
-        try:
-            parsed = series.str.to_date(fmt, strict=False)
-            if parsed.null_count() < len(series) * 0.2:
-                return parsed
-        except Exception:
-            continue
-
-    # Fallback to general parsing with strict=False
-    return series.cast(pl.Utf8).str.to_date(strict=False)
+        return "1d", "D"
 
 
 def detect_outliers_iqr(series: pl.Series, multiplier: float = 3.0) -> Tuple[pl.Series, float]:
@@ -237,8 +269,15 @@ def clean_and_regularize_dataset(
         min_date = prod_df["date"].min()
         max_date = prod_df["date"].max()
 
-        # Generate complete date range from min_date to max_date
-        interval = "1d" if mapping_config.aggregation_granularity == "daily" else "1w"
+        # Dynamically determine calendar grid interval from actual dates
+        inferred_interval, inferred_freq = infer_natural_frequency(grouped_df["date"])
+        if mapping_config.aggregation_granularity == "weekly":
+            interval = "1w"
+        elif mapping_config.aggregation_granularity == "daily":
+            interval = "1d"
+        else:
+            interval = inferred_interval
+
         full_dates = pl.date_range(
             start=min_date,
             end=max_date,
@@ -294,7 +333,8 @@ def clean_and_regularize_dataset(
         "duplicate_count": int(duplicate_count),
         "outlier_count": total_outliers,
         "parquet_path": str(parquet_path),
-        "granularity": mapping_config.aggregation_granularity,
+        "granularity": "weekly" if interval == "1w" else ("monthly" if interval == "1mo" else "daily"),
+        "frequency_code": inferred_freq,
         "unique_products": len(unique_products),
     }
 

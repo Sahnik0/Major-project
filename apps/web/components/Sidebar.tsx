@@ -64,7 +64,6 @@ export function Sidebar({
           onChange={(e) => e.target.files?.[0] && onDirectUpload?.(e.target.files[0])}
         />
         <button
-          onClick={onNewUpload}
           onClick={() => {
             if (onDirectUpload) {
               fileInputRef.current?.click();
@@ -78,7 +77,6 @@ export function Sidebar({
             <Plus className="w-4 h-4 text-[#b4b4b4] group-hover:text-white" />
             <span>Upload sales file</span>
           </span>
-          <span className="text-[10px] text-[#8e8e8e] font-mono">CSV</span>
           <span className="text-[10px] text-[#8e8e8e] font-mono">CSV / XLSX</span>
         </button>
       </div>

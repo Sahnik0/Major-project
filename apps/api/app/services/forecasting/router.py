@@ -16,6 +16,7 @@ def get_candidate_models_for_class(
     history_length: int,
     season_length: int = 7,
     include_timesfm: bool = False,
+    freq: str = "D",
 ) -> List[Forecaster]:
     """
     Returns the list of candidate model instances suitable for the given series class.
@@ -36,7 +37,7 @@ def get_candidate_models_for_class(
         candidates.append(NaiveForecaster())
         if include_timesfm:
             from apps.api.app.services.forecasting.timesfm_forecaster import TimesFMForecaster
-            candidates.append(TimesFMForecaster(series_class=series_class, season_length=season_length))
+            candidates.append(TimesFMForecaster(series_class=series_class, season_length=season_length, freq=freq))
 
     elif series_class in ("intermittent", "lumpy"):
         candidates.append(CrostonForecaster(variant="classic"))
@@ -45,7 +46,7 @@ def get_candidate_models_for_class(
         candidates.append(NaiveForecaster())
         if include_timesfm:
             from apps.api.app.services.forecasting.timesfm_forecaster import TimesFMForecaster
-            candidates.append(TimesFMForecaster(series_class=series_class, season_length=season_length))
+            candidates.append(TimesFMForecaster(series_class=series_class, season_length=season_length, freq=freq))
 
     elif series_class == "short_history":
         candidates.append(NaiveForecaster())
