@@ -53,8 +53,10 @@ def run_forecast_job_sync(
 
         for idx, prod in enumerate(unique_products):
             step_progress = int(10 + (idx / total_products) * 85)
+            step_progress = int(25 + (idx / total_products) * 70)
             job.progress = step_progress
             job.current_step = f"Forecasting product {idx+1}/{total_products}: {prod}"
+            job.current_step = f"Evaluating TimesFM & baselines for {prod} ({idx+1}/{total_products})..."
             db.commit()
 
             p_df = df.filter(pl.col("product") == prod).sort("date")
@@ -152,10 +154,22 @@ def run_forecast_job_sync(
             db.add(pf)
             db.commit()
 
+        dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if dataset:
+            dataset.status = "ready"
         job.status = "completed"
         job.progress = 100
         job.current_step = "Forecast and inventory analysis completed"
+        job.current_step = "Analysis complete. Predictions and inventory sizing ready."
         db.commit()
+
+        # Generate initial decision cards and executive briefing eagerly
+        try:
+            from apps.api.app.services.chat_advisor import get_or_create_initial_messages
+            if dataset:
+                get_or_create_initial_messages(dataset, db)
+        except Exception as e_msg:
+            pass
 
     except Exception as e:
         db.rollback()

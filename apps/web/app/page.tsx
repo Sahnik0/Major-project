@@ -94,6 +94,11 @@ export default function Home() {
               });
             }).catch(console.error);
           }
+          await loadDatasets();
+          setActiveJob(null);
+        } else if (j.status === "failed") {
+          await loadDatasets();
+          setActiveJob(null);
         }
       } catch (err) {
         console.error(err);
@@ -141,6 +146,33 @@ export default function Home() {
     }
   };
 
+  // Direct zero-friction file upload
+  const handleDirectFileUpload = async (file: File) => {
+    setActiveJob({
+      id: "uploading",
+      status: "processing",
+      progress: 5,
+      step: `Analyzing columns of ${file.name} with AI...`,
+    });
+    try {
+      const resp = await api.uploadDataset(file);
+      await loadDatasets();
+      setSelectedDatasetId(resp.id);
+
+      if (resp.job_id) {
+        setActiveJob({
+          id: resp.job_id,
+          status: "processing",
+          progress: 15,
+          step: "Columns understood by AI. Regularizing records & running TimesFM...",
+        });
+      }
+    } catch (err: any) {
+      alert(err.message || "Failed to upload file");
+      setActiveJob(null);
+    }
+  };
+
   const currentDataset = datasets.find((d) => d.id === selectedDatasetId) || null;
 
   return (
@@ -151,6 +183,7 @@ export default function Home() {
         selectedDatasetId={selectedDatasetId}
         onSelectDataset={selectDataset}
         onNewUpload={() => setIsUploadOpen(true)}
+        onDirectUpload={handleDirectFileUpload}
         onDeleteDataset={handleDeleteDataset}
         onOpenSettings={() => setIsSettingsOpen(true)}
         health={health}
@@ -172,6 +205,7 @@ export default function Home() {
         <ChatInterface
           dataset={currentDataset}
           onOpenUpload={() => setIsUploadOpen(true)}
+          onDirectUpload={handleDirectFileUpload}
           onLoadDemo={handleLoadDemo}
           isLoadingDemo={loadingDemo}
           onInspectProduct={handleInspectProduct}

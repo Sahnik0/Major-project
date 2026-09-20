@@ -252,4 +252,124 @@ def suggest_column_mapping_heuristics(
                 used_columns.add(col)
                 break
 
+    # If any required field is still missing, try Gemma LLM inference
+    required = ["date", "product", "quantity"]
+    if any(r not in suggested_mapping for r in required):
+        try:
+            ai_mapping = infer_column_mapping_with_gemma(df)
+            for k, v in ai_mapping.items():
+                if k not in suggested_mapping and v in df.columns and v not in used_columns:
+                    suggested_mapping[k] = v
+                    confidence[k] = 0.85
+                    reasons[k] = "Inferred by local Gemma LLM from sample rows"
+                    used_columns.add(v)
+        except Exception:
+            pass
+
+    # Deterministic fallback guarantee: ensure required fields are never left unmapped
+    if "date" not in suggested_mapping:
+        # Find column with best date parse rate
+        best_date_col = None
+        best_rate = 0.0
+        for col in df.columns:
+            if col not in used_columns:
+                rate = check_date_parse_rate(df, col)
+                if rate > best_rate:
+                    best_rate = rate
+                    best_date_col = col
+        if best_date_col and best_rate > 0.2:
+            suggested_mapping["date"] = best_date_col
+            confidence["date"] = 0.60
+            reasons["date"] = f"Fallback: Best date pattern match ({int(best_rate * 100)}%)"
+            used_columns.add(best_date_col)
+        elif df.columns:
+            # Fallback to first column
+            first_col = [c for c in df.columns if c not in used_columns]
+            if first_col:
+                suggested_mapping["date"] = first_col[0]
+                confidence["date"] = 0.40
+                reasons["date"] = "Fallback: Selected first available column as date"
+                used_columns.add(first_col[0])
+
+    if "quantity" not in suggested_mapping:
+        # Pick first numeric column
+        for col in df.columns:
+            if col not in used_columns:
+                is_num = df[col].dtype in (
+                    pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+                    pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+                    pl.Float32, pl.Float64
+                )
+                if is_num:
+                    suggested_mapping["quantity"] = col
+                    confidence["quantity"] = 0.65
+                    reasons["quantity"] = "Fallback: Selected first available numeric column as quantity"
+                    used_columns.add(col)
+                    break
+
+    if "product" not in suggested_mapping:
+        # Pick first string or categorical column
+        for col in df.columns:
+            if col not in used_columns:
+                is_str = df[col].dtype in (pl.Utf8, pl.Categorical)
+                if is_str:
+                    suggested_mapping["product"] = col
+                    confidence["product"] = 0.60
+                    reasons["product"] = "Fallback: Selected textual column as product identifier"
+                    used_columns.add(col)
+                    break
+        # If still missing, pick any remaining unused column
+        if "product" not in suggested_mapping:
+            remaining = [c for c in df.columns if c not in used_columns]
+            if remaining:
+                suggested_mapping["product"] = remaining[0]
+                confidence["product"] = 0.40
+                reasons["product"] = "Fallback: Assigned remaining column as product identifier"
+                used_columns.add(remaining[0])
+
     return suggested_mapping, confidence, reasons
+
+
+def infer_column_mapping_with_gemma(df: pl.DataFrame) -> Dict[str, str]:
+    """Uses local Gemma LLM to infer column mapping from column names and sample rows."""
+    import json
+    import httpx
+    from apps.api.app.config import settings
+
+    cols = df.columns
+    sample_rows = df.head(3).to_dicts()
+
+    prompt = (
+        f"You are a sales dataset ingestion parser. Identify which spreadsheet column corresponds to:\n"
+        f"- 'date': date of sale or order\n"
+        f"- 'product': product name, SKU, item code, or description\n"
+        f"- 'quantity': units sold, quantity, or volume\n"
+        f"- 'revenue': total price, sales amount, or revenue (optional)\n\n"
+        f"Columns available: {cols}\n"
+        f"Sample data rows: {json.dumps(sample_rows, default=str)}\n\n"
+        f"Reply ONLY with a valid JSON object matching: {{\"date\": \"col_name\", \"product\": \"col_name\", \"quantity\": \"col_name\", \"revenue\": \"col_name\"}}\n"
+        f"Do not include any other markdown or text."
+    )
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(
+                f"{settings.OLLAMA_URL}/api/generate",
+                json={
+                    "model": settings.OLLAMA_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "format": "json",
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_text = data.get("response", "").strip()
+                parsed = json.loads(raw_text)
+                return {k: v for k, v in parsed.items() if v in cols}
+    except Exception:
+        pass
+
+    return {}
+
+

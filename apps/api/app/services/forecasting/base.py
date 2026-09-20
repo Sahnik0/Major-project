@@ -15,6 +15,8 @@ class ForecastPrediction:
 
 class Forecaster(ABC):
     name: str = "BaseForecaster"
+    def __init__(self, name: str = "BaseForecaster"):
+        self.name = name
 
     @abstractmethod
     def fit(

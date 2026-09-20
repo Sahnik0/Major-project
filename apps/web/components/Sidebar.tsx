@@ -16,6 +16,7 @@ interface SidebarProps {
   selectedDatasetId: string | null;
   onSelectDataset: (id: string) => void;
   onNewUpload: () => void;
+  onDirectUpload?: (file: File) => void;
   onDeleteDataset: (id: string) => void;
   onOpenSettings: () => void;
   health: SystemHealth | null;
@@ -26,10 +27,13 @@ export function Sidebar({
   selectedDatasetId,
   onSelectDataset,
   onNewUpload,
+  onDirectUpload,
   onDeleteDataset,
   onOpenSettings,
   health,
 }: SidebarProps) {
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
   return (
     <aside className="w-64 bg-[#171717] border-r border-[#262626] flex flex-col h-screen shrink-0 select-none text-[#ececec]">
       {/* App Header: Clean minimalist typography, no slop logo */}
@@ -52,8 +56,22 @@ export function Sidebar({
 
       {/* New Upload Button (ChatGPT "+ New Chat" style) */}
       <div className="p-3">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,.xlsx,.xls"
+          className="hidden"
+          onChange={(e) => e.target.files?.[0] && onDirectUpload?.(e.target.files[0])}
+        />
         <button
           onClick={onNewUpload}
+          onClick={() => {
+            if (onDirectUpload) {
+              fileInputRef.current?.click();
+            } else {
+              onNewUpload();
+            }
+          }}
           className="w-full flex items-center justify-between px-3 py-2 rounded-lg border border-[#333333] hover:bg-[#212121] text-[#ececec] text-xs font-medium transition group"
         >
           <span className="flex items-center gap-2">
@@ -61,6 +79,7 @@ export function Sidebar({
             <span>Upload sales file</span>
           </span>
           <span className="text-[10px] text-[#8e8e8e] font-mono">CSV</span>
+          <span className="text-[10px] text-[#8e8e8e] font-mono">CSV / XLSX</span>
         </button>
       </div>
 

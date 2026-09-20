@@ -80,7 +80,11 @@ async def upload_dataset(
         )
 
     # Generate heuristic column mapping suggestions
+    # Generate heuristic & AI column mapping suggestions
     suggested_mapping, confidences, reasons = suggest_column_mapping_heuristics(raw_df)
+
+    has_required = all(k in suggested_mapping for k in ("date", "product", "quantity"))
+    status = "processing" if has_required else "mapping_pending"
 
     # Create dataset record
     dataset = Dataset(
@@ -88,13 +92,39 @@ async def upload_dataset(
         name=dataset_name,
         original_filename=file.filename,
         file_path=str(dest_path),
-        status="mapping_pending",
+        status=status,
         row_count=total_rows,
         column_mapping=suggested_mapping,
     )
     db.add(dataset)
     db.commit()
     db.refresh(dataset)
+
+    job_id = None
+    if has_required:
+        job_id = str(uuid.uuid4())
+        job = Job(
+            id=job_id,
+            dataset_id=dataset_id,
+            job_type="cleaning_profiling",
+            status="queued",
+            progress=5,
+            current_step="Columns understood by AI. Cleaning and regularizing data...",
+        )
+        db.add(job)
+        db.commit()
+
+        await enqueue_cleaning_and_profiling(
+            dataset_id=dataset_id,
+            job_id=job_id,
+            mapping_config_dict={
+                "mapping": suggested_mapping,
+                "date_format": None,
+                "drop_duplicates": False,
+                "returns_handling": "net",
+                "aggregation_granularity": "daily",
+            },
+        )
 
     return DatasetUploadResponse(
         id=dataset.id,
@@ -106,6 +136,7 @@ async def upload_dataset(
         suggested_mapping=suggested_mapping,
         mapping_confidence=confidences,
         mapping_reasons=reasons,
+        job_id=job_id,
         created_at=dataset.created_at,
     )
 

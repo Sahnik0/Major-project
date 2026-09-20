@@ -6,7 +6,11 @@ import torch
 
 from apps.api.app.config import settings
 from apps.api.app.services.forecasting.base import Forecaster, ForecastPrediction
-from apps.api.app.services.forecasting.baselines import AutoETSForecaster, CrostonForecaster
+from apps.api.app.services.forecasting.baselines import (
+    AutoETSForecaster,
+    CrostonForecaster,
+    _generate_future_dates,
+)
 
 logger = logging.getLogger("advisor.forecasting.timesfm")
 
@@ -52,8 +56,16 @@ def get_timesfm_model():
             repo_id = "google/timesfm-2.5-200m-pytorch"
             model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(repo_id)
 
+        if hasattr(model, "compile"):
+            try:
+                from timesfm import ForecastConfig
+                config = ForecastConfig(max_context=1024, max_horizon=64)
+                model.compile(config)
+            except Exception as comp_err:
+                logger.warning(f"TimesFM compile warning: {comp_err}")
+
         _model_instance = model
-        logger.info(f"Successfully loaded TimesFM model from {repo_id}")
+        logger.info(f"Successfully loaded and compiled TimesFM model from {repo_id}")
         return _model_instance
 
     except Exception as exc:
@@ -140,25 +152,22 @@ class TimesFMForecaster(Forecaster):
             return pred
 
         try:
-            # Frequency indicator: 0 for Daily, 1 for Weekly, 2 for Monthly
-            freq_indicator = 0
-            if self.freq.upper().startswith("W"):
-                freq_indicator = 1
-            elif self.freq.upper().startswith("M"):
-                freq_indicator = 2
-
-            inputs = [self.y_history.tolist()]
+            input_arr = np.asarray(self.y_history, dtype=np.float32)
             # Call forecast
             if hasattr(model, "forecast"):
-                point_fc, q_fc = model.forecast(
-                    inputs,
-                    freq=[freq_indicator],
-                    forecast_context_len=len(self.y_history),
-                )
+                try:
+                    point_fc, q_fc = model.forecast(
+                        horizon=horizon,
+                        inputs=[input_arr],
+                    )
+                except TypeError:
+                    point_fc, q_fc = model.forecast(
+                        [self.y_history.tolist()],
+                        forecast_context_len=len(self.y_history),
+                    )
             elif hasattr(model, "predict"):
                 point_fc, q_fc = model.predict(
-                    inputs,
-                    freq=[freq_indicator],
+                    inputs=[input_arr],
                 )
             else:
                 raise RuntimeError("TimesFM model instance has neither forecast nor predict method")
@@ -170,11 +179,15 @@ class TimesFMForecaster(Forecaster):
             q_dict: Dict[float, List[float]] = {}
             if q_fc is not None and len(q_fc) > 0:
                 raw_q = np.asarray(q_fc[0][:horizon], dtype=float)
-                # Ensure monotonicity
-                raw_q = np.sort(raw_q, axis=-1)
-                q10 = np.maximum(0.0, raw_q[:, 1]) if raw_q.shape[1] > 1 else pt * 0.8
-                q50 = np.maximum(0.0, raw_q[:, 5]) if raw_q.shape[1] > 5 else pt
-                q90 = np.maximum(0.0, raw_q[:, 9]) if raw_q.shape[1] > 9 else pt * 1.2
+                if raw_q.ndim >= 2:
+                    raw_q = np.sort(raw_q, axis=-1)
+                    q10 = np.maximum(0.0, raw_q[:, 1]) if raw_q.shape[1] > 1 else pt * 0.8
+                    q50 = np.maximum(0.0, raw_q[:, 5]) if raw_q.shape[1] > 5 else pt
+                    q90 = np.maximum(0.0, raw_q[:, 9]) if raw_q.shape[1] > 9 else pt * 1.2
+                else:
+                    q10 = np.maximum(0.0, pt * 0.8)
+                    q50 = pt
+                    q90 = np.maximum(0.0, pt * 1.2)
             else:
                 q10 = np.maximum(0.0, pt * 0.8)
                 q50 = pt
@@ -188,11 +201,17 @@ class TimesFMForecaster(Forecaster):
             q_dict[0.5] = q50.tolist()
             q_dict[0.9] = q90.tolist()
 
+            future_dates = (
+                _generate_future_dates(self.last_date, horizon, self.freq)
+                if self.last_date
+                else []
+            )
+
             return ForecastPrediction(
                 model_name=self.name,
                 point_forecast=pt.tolist(),
                 quantiles=q_dict,
-                prediction_dates=[],
+                dates=future_dates,
             )
 
         except Exception as e:

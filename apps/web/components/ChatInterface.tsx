@@ -13,6 +13,7 @@ import {
   Package,
 } from "lucide-react";
 import { api, DatasetItem } from "@/lib/api";
+import ReactMarkdown from "react-markdown";
 
 interface ChatMessage {
   id: string;
@@ -26,6 +27,7 @@ interface ChatMessage {
 interface ChatInterfaceProps {
   dataset: DatasetItem | null;
   onOpenUpload: () => void;
+  onDirectUpload: (file: File) => void;
   onLoadDemo: () => void;
   isLoadingDemo: boolean;
   onInspectProduct: (productName: string) => void;
@@ -35,6 +37,7 @@ interface ChatInterfaceProps {
 export function ChatInterface({
   dataset,
   onOpenUpload,
+  onDirectUpload,
   onLoadDemo,
   isLoadingDemo,
   onInspectProduct,
@@ -44,6 +47,8 @@ export function ChatInterface({
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const zeroFileInputRef = useRef<HTMLInputElement>(null);
+  const chatFileInputRef = useRef<HTMLInputElement>(null);
 
   // Load conversation when dataset changes
   useEffect(() => {
@@ -123,8 +128,23 @@ export function ChatInterface({
         {/* Upload Dropzone */}
         <div
           onClick={onOpenUpload}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+              onDirectUpload(e.dataTransfer.files[0]);
+            }
+          }}
+          onClick={() => zeroFileInputRef.current?.click()}
           className="w-full border border-dashed border-[#383838] hover:border-[#555555] rounded-2xl p-8 bg-[#262626]/50 hover:bg-[#262626] transition cursor-pointer flex flex-col items-center space-y-2 group"
         >
+          <input
+            ref={zeroFileInputRef}
+            type="file"
+            accept=".csv,.xlsx,.xls"
+            className="hidden"
+            onChange={(e) => e.target.files?.[0] && onDirectUpload(e.target.files[0])}
+          />
           <div className="p-3 rounded-full bg-[#2f2f2f] text-[#ececec] group-hover:scale-105 transition">
             <FileSpreadsheet className="w-5 h-5 text-[#ececec]" />
           </div>
@@ -132,6 +152,7 @@ export function ChatInterface({
             <span className="font-medium text-[#ececec]">Click to select or drop your sales CSV / Excel</span>
             <p className="text-[11px] text-[#8e8e8e] mt-0.5">
               Requires columns: Date, Product SKU, Units Sold
+              AI automatically understands your columns, runs TimesFM & baselines, and generates recommendations
             </p>
           </div>
         </div>
@@ -208,6 +229,7 @@ export function ChatInterface({
                 }`}
               >
                 {/* Assistant Message Header (Minimal monochrome) */}
+                {/* Assistant Message Header (Minimal monochrome) */}
                 {m.role === "assistant" && (
                   <div className="flex items-center gap-2 text-[11px] text-[#8e8e8e] mb-1">
                     <span className="font-semibold text-[#ececec]">Stock Advisor</span>
@@ -217,14 +239,35 @@ export function ChatInterface({
                 {/* Plain Text Body */}
                 <div className="whitespace-pre-line text-[#ececec] leading-relaxed">
                   {m.content}
+                {/* Markdown Body */}
+                <div className="text-[#ececec] leading-relaxed text-xs">
+                  <ReactMarkdown
+                    components={{
+                      h1: ({ children }) => <h1 className="text-sm font-semibold text-white mt-3 mb-2">{children}</h1>,
+                      h2: ({ children }) => <h2 className="text-xs font-semibold text-white mt-3 mb-1.5">{children}</h2>,
+                      h3: ({ children }) => <h3 className="text-xs font-semibold text-white mt-2.5 mb-1">{children}</h3>,
+                      p: ({ children }) => <p className="mb-2 leading-relaxed text-[#d1d1d1] last:mb-0">{children}</p>,
+                      ul: ({ children }) => <ul className="list-disc list-inside space-y-1 mb-2 text-[#d1d1d1]">{children}</ul>,
+                      ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 mb-2 text-[#d1d1d1]">{children}</ol>,
+                      li: ({ children }) => <li className="text-[#d1d1d1]">{children}</li>,
+                      strong: ({ children }) => <strong className="font-semibold text-white">{children}</strong>,
+                      code: ({ children }) => <code className="bg-[#2a2a2a] text-[#ececec] px-1 py-0.5 rounded text-[11px] font-mono">{children}</code>,
+                      hr: () => <hr className="border-[#333333] my-3" />,
+                    }}
+                  >
+                    {m.content}
+                  </ReactMarkdown>
                 </div>
 
                 {/* Step 1: Clean & Check Data Card */}
                 {m.card_type === "health_summary" && m.payload && (
                   <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-2.5 mt-2">
+                  <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-3 mt-2">
                     <div className="flex items-center justify-between text-[11px] text-[#8e8e8e]">
                       <span className="font-medium text-[#ececec]">Syntetos-Boylan Demand Quadrant</span>
                       <span>{m.payload.total_products} products</span>
+                      <span className="font-medium text-[#ececec]">Data Health & Schema</span>
+                      <span>{m.payload.total_products} products • {m.payload.total_days} days</span>
                     </div>
 
                     <div className="grid grid-cols-3 gap-1.5 text-[11px]">
@@ -237,6 +280,32 @@ export function ChatInterface({
                           <span className="font-semibold text-[#ececec]">{count as number}</span>
                         </div>
                       ))}
+                    {/* Mapped Columns Pills */}
+                    {m.payload.column_mapping && (
+                      <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                        <span className="text-[#8e8e8e]">Auto-Mapped:</span>
+                        {Object.entries(m.payload.column_mapping).map(([k, v]) => (
+                          <span key={k} className="px-2 py-0.5 rounded bg-[#1f1f1f] border border-[#303030] text-[#b4b4b4]">
+                            <strong className="text-white capitalize">{k}:</strong> {v as string}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Demand Quadrant Distribution */}
+                    <div>
+                      <span className="text-[10px] text-[#8e8e8e] block mb-1.5">Syntetos-Boylan Demand Quadrant</span>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 text-[11px]">
+                        {Object.entries(m.payload.class_distribution || {}).map(([cls, count]) => (
+                          <div
+                            key={cls}
+                            className="bg-[#212121] px-2.5 py-1.5 rounded-lg border border-[#2e2e2e] flex items-center justify-between"
+                          >
+                            <span className="capitalize text-[#b4b4b4] text-[10px]">{cls}</span>
+                            <span className="font-semibold text-[#ececec]">{count as number}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -244,11 +313,14 @@ export function ChatInterface({
                 {/* Step 2: Forecast Proof Card */}
                 {m.card_type === "forecast_proof" && m.payload && (
                   <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-2.5 mt-2">
+                  <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-3 mt-2">
                     <div className="flex items-center justify-between text-[11px] text-[#8e8e8e]">
                       <span className="font-medium text-[#ececec]">Honest Backtest Scoreboard</span>
                       <span className="font-mono text-[10px]">WAPE ~{m.payload.average_error_pct}%</span>
+                      <span className="font-mono text-[10px]">Avg WAPE: ~{m.payload.average_error_pct}%</span>
                     </div>
 
+                    {/* Model Counts */}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 text-[11px]">
                       {Object.entries(m.payload.model_counts || {}).map(([model, count]) => (
                         <div
@@ -257,9 +329,37 @@ export function ChatInterface({
                         >
                           <span className="text-[10px] text-[#8e8e8e] block truncate">{model}</span>
                           <span className="text-xs font-semibold text-emerald-400 mt-0.5 block">{count as number} items</span>
+                          <span className="text-xs font-semibold text-emerald-400 mt-0.5 block">{count as number} won</span>
                         </div>
                       ))}
                     </div>
+
+                    {/* Top Projected Products with Uncertainty Ranges */}
+                    {m.payload.top_projected && m.payload.top_projected.length > 0 && (
+                      <div className="space-y-1 pt-1">
+                        <span className="text-[10px] text-[#8e8e8e] block mb-1">Top Demand Projections (28-Day Horizon)</span>
+                        <div className="space-y-1">
+                          {m.payload.top_projected.map((tp: any) => (
+                            <div
+                              key={tp.product}
+                              onClick={() => onInspectProduct(tp.product)}
+                              className="flex items-center justify-between p-2 rounded-lg bg-[#212121] border border-[#2e2e2e] hover:border-[#444444] cursor-pointer transition text-xs"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-[#ececec]">{tp.product}</span>
+                                <span className="text-[10px] text-[#8e8e8e] font-mono">({tp.model})</span>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <span className="text-[11px] text-[#8e8e8e]">80% range: {tp.p10?.toLocaleString()} - {tp.p90?.toLocaleString()}</span>
+                                <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-medium text-[11px]">
+                                  ~{tp.projected_units?.toLocaleString()} units
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                     <p className="text-[10px] text-[#8e8e8e] italic">
                       Every model was chosen based on rolling backtests. Simpler baselines were selected whenever TimesFM did not outperform them.
@@ -389,11 +489,20 @@ export function ChatInterface({
             }}
             className="flex items-center gap-2 bg-[#2f2f2f] border border-[#383838] focus-within:border-[#555555] rounded-3xl px-3 py-2 transition"
           >
+            <input
+              ref={chatFileInputRef}
+              type="file"
+              accept=".csv,.xlsx,.xls"
+              className="hidden"
+              onChange={(e) => e.target.files?.[0] && onDirectUpload(e.target.files[0])}
+            />
             <button
               type="button"
               onClick={onOpenUpload}
+              onClick={() => chatFileInputRef.current?.click()}
               className="p-1.5 rounded-full text-[#8e8e8e] hover:text-[#ececec] hover:bg-[#383838] transition"
               title="Upload new file"
+              title="Upload sales spreadsheet"
             >
               <Paperclip className="w-4 h-4" />
             </button>

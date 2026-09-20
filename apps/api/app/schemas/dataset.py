@@ -27,6 +27,7 @@ class DatasetUploadResponse(BaseModel):
     suggested_mapping: Dict[str, str]
     mapping_confidence: Dict[str, float]
     mapping_reasons: Dict[str, str]
+    job_id: Optional[str] = None
     created_at: datetime
 
 

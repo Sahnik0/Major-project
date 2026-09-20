@@ -60,6 +60,8 @@ def run_cleaning_and_profiling_sync(
 
         # Update dataset record
         dataset.status = "ready"
+        # Update dataset record with cleaning metadata
+        dataset.status = "processing"
         dataset.parquet_path = cleaning_meta["parquet_path"]
         dataset.row_count = cleaning_meta["cleaned_row_count"]
         dataset.product_count = cleaning_meta["unique_products"]
@@ -70,7 +72,33 @@ def run_cleaning_and_profiling_sync(
         job.status = "completed"
         job.progress = 100
         job.current_step = "Completed"
+        job.progress = 25
+        job.current_step = "Data regularized & profiled. Starting TimesFM & baseline evaluations..."
         db.commit()
+
+        # Automatically run TimesFM & baseline forecasting and inventory sizing with the active job
+        try:
+            from apps.api.app.jobs.forecast_runner import run_forecast_job_sync
+
+            run_forecast_job_sync(
+                dataset_id=dataset_id,
+                job_id=job_id,
+                params_dict={
+                    "horizon": 28,
+                    "num_folds": 2,
+                    "service_level": 0.90,
+                    "lead_time_days": 7,
+                    "review_period_days": 7,
+                    "include_timesfm": True,
+                },
+            )
+        except Exception as f_err:
+            logger.warning(f"Auto-forecasting error: {f_err}")
+            dataset.status = "ready"
+            job.status = "completed"
+            job.progress = 100
+            job.current_step = "Data cleaned and health profiled (forecasting skipped)"
+            db.commit()
 
     except Exception as e:
         db.rollback()

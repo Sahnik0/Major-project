@@ -19,6 +19,11 @@ def get_or_create_initial_messages(dataset: Dataset, db: Session) -> List[ChatMe
     Step 1: Clean and check data
     Step 2: Forecast demand with proof
     Step 3: Turn forecast into decisions
+    Creates or retrieves the 4 core decision step messages for the dataset:
+    Step 1: Clean and check data & schema
+    Step 2: Forecast demand with proof (TimesFM vs Baselines)
+    Step 3: Turn forecast into decisions (Reorder Points & Quantities)
+    Step 4: AI Executive Briefing & Predictions Summary
     """
     existing = (
         db.query(ChatMessage)
@@ -28,6 +33,7 @@ def get_or_create_initial_messages(dataset: Dataset, db: Session) -> List[ChatMe
     )
     if existing:
         return existing
+    existing_card_types = {m.card_type for m in existing if m.card_type}
 
     health = dataset.health_report or {}
     forecasts = (
@@ -35,12 +41,18 @@ def get_or_create_initial_messages(dataset: Dataset, db: Session) -> List[ChatMe
     )
 
     messages: List[ChatMessage] = []
+    # If all cards including executive_summary already exist, return as is
+    if "executive_summary" in existing_card_types:
+        return existing
 
     # Step 1: Clean & Check Data Card
+    messages: List[ChatMessage] = list(existing)
+
     total_cleaned = health.get("total_rows_cleaned", dataset.row_count or 0)
     total_prods = health.get("total_products", dataset.product_count or 0)
     class_dist = health.get("class_distribution", {})
     issues = health.get("issues", [])
+    col_map = dataset.column_mapping or {}
 
     step1_content = (
         f"**Step 1: Data Cleaned & Verified.**\n"
@@ -69,8 +81,52 @@ def get_or_create_initial_messages(dataset: Dataset, db: Session) -> List[ChatMe
     m1.payload = step1_payload
     db.add(m1)
     messages.append(m1)
+    # Step 1: Clean & Check Data Card
+    if "health_summary" not in existing_card_types:
+        date_col = col_map.get("date", "Date")
+        prod_col = col_map.get("product", "Product")
+        qty_col = col_map.get("quantity", "Quantity")
+        rev_col = col_map.get("revenue")
 
     # If forecasts exist, create Steps 2 and 3
+        mapping_desc = f"Date: `{date_col}`, Product: `{prod_col}`, Quantity: `{qty_col}`"
+        if rev_col:
+            mapping_desc += f", Revenue: `{rev_col}`"
+
+        step1_content = (
+            f"**Step 1: Data Ingestion & Hygiene Verified.**\n"
+            f"I inspected your sales file (**{dataset.original_filename}**) and auto-detected your columns:\n"
+            f"• **Mapped Columns**: {mapping_desc}\n\n"
+            f"We regularized **{total_cleaned:,} records** spanning **{health.get('total_days', 0)} calendar days** "
+            f"({health.get('date_min', 'start')} to {health.get('date_max', 'end')}). "
+            f"Missing periods were zero-filled during active lifecycles, duplicate records consolidated, "
+            f"and returns isolated. Your **{total_prods} products** have been classified by demand pattern."
+        )
+        step1_payload = {
+            "step": 1,
+            "title": "Clean & Check the Data",
+            "total_rows_cleaned": total_cleaned,
+            "total_products": total_prods,
+            "total_days": health.get("total_days", 0),
+            "date_min": health.get("date_min"),
+            "date_max": health.get("date_max"),
+            "column_mapping": col_map,
+            "class_distribution": class_dist,
+            "issues_count": len(issues),
+            "issues": issues[:4],
+        }
+        m1 = ChatMessage(
+            dataset_id=dataset.id,
+            role="assistant",
+            content=step1_content,
+            card_type="health_summary",
+        )
+        m1.payload = step1_payload
+        db.add(m1)
+        messages.append(m1)
+        db.commit()
+
+    # If forecasts exist, generate Step 2, Step 3, and Step 4
     if forecasts:
         # Step 2: Forecast Demand with Proof
         model_counts: Dict[str, int] = {}
@@ -89,29 +145,52 @@ def get_or_create_initial_messages(dataset: Dataset, db: Session) -> List[ChatMe
 
         avg_wape = round(float(sum(wapes) / len(wapes)) * 100, 1) if wapes else 15.0
 
-        step2_content = (
-            f"**Step 2: Forecast Demand with Proof.**\n"
-            f"We evaluated TimesFM against simple baseline models (AutoETS, AutoARIMA, Croston) on your actual data "
-            f"using rolling-origin backtesting. We show the honest winner for every product, even when the simple method wins.\n"
-            f"Across {len(forecasts)} products, total expected demand is approximately {int(round(total_forecast_units)):,} units."
+        # Collect top projected products
+        sorted_forecasts = sorted(
+            forecasts,
+            key=lambda f: sum(f.point_forecast or []),
+            reverse=True,
         )
-        step2_payload = {
-            "step": 2,
-            "title": "Forecast Demand with Proof",
-            "model_counts": model_counts,
-            "total_products": len(forecasts),
-            "total_forecast_units": int(round(total_forecast_units)),
-            "average_error_pct": avg_wape,
-        }
-        m2 = ChatMessage(
-            dataset_id=dataset.id,
-            role="assistant",
-            content=step2_content,
-            card_type="forecast_proof",
-        )
-        m2.payload = step2_payload
-        db.add(m2)
-        messages.append(m2)
+        top_projected = [
+            {
+                "product": f.product_id,
+                "model": f.chosen_model,
+                "projected_units": int(round(sum(f.point_forecast or []))),
+                "p10": int(round(sum(f.quantiles.get("0.1", f.point_forecast or [])))),
+                "p90": int(round(sum(f.quantiles.get("0.9", f.point_forecast or [])))),
+            }
+            for f in sorted_forecasts[:5]
+        ]
+
+        # Step 2: Forecast Demand with Proof
+        if "forecast_proof" not in existing_card_types:
+            top_prods_str = ", ".join(f"**{p['product']}** (~{p['projected_units']:,} units)" for p in top_projected[:3])
+            step2_content = (
+                f"**Step 2: Forecast Demand with Proof.**\n"
+                f"We evaluated Google TimesFM against classical statistical baselines (AutoETS, AutoARIMA, Croston) on your actual data "
+                f"using rolling-origin backtesting. We show the honest winner for every product, even when the simple method wins.\n"
+                f"• **Total Projected Demand**: **{int(round(total_forecast_units)):,} units** over the upcoming 28-day horizon.\n"
+                f"• **Top Projected Products**: {top_prods_str}.\n"
+                f"• **Average Backtest Error (WAPE)**: **~{avg_wape}%** across evaluated folds."
+            )
+            step2_payload = {
+                "step": 2,
+                "title": "Forecast Demand with Proof",
+                "model_counts": model_counts,
+                "total_products": len(forecasts),
+                "total_forecast_units": int(round(total_forecast_units)),
+                "average_error_pct": avg_wape,
+                "top_projected": top_projected,
+            }
+            m2 = ChatMessage(
+                dataset_id=dataset.id,
+                role="assistant",
+                content=step2_content,
+                card_type="forecast_proof",
+            )
+            m2.payload = step2_payload
+            db.add(m2)
+            messages.append(m2)
 
         # Step 3: Turn Forecast into Decisions
         reorder_items = []
@@ -134,35 +213,105 @@ def get_or_create_initial_messages(dataset: Dataset, db: Session) -> List[ChatMe
 
         reorder_items.sort(key=lambda x: x["recommended_qty"], reverse=True)
 
-        step3_content = (
-            f"**Step 3: Actionable Reorder Decisions.**\n"
-            f"Plain math converted the forecasts into exact Reorder Points (ROP) and order quantities based on your supplier lead time.\n"
-            + (
-                f"You have {len(reorder_items)} items recommended for reordering."
-                if reorder_items
-                else "All items currently maintain healthy stock levels based on your lead times."
+        if "inventory_decision" not in existing_card_types:
+            step3_content = (
+                f"**Step 3: Actionable Reorder Decisions.**\n"
+                f"Deterministic lead-time math converted the forecasts into exact Reorder Points (ROP) and order quantities based on your supplier lead time and 90% service level.\n"
+                + (
+                    f"⚠️ **{len(reorder_items)} items** require restocking to maintain safety buffers."
+                    if reorder_items
+                    else "✅ All items currently maintain stock above their reorder thresholds."
+                )
             )
-        )
-        step3_payload = {
-            "step": 3,
-            "title": "Turn Forecast into Decisions",
-            "reorder_actions_count": len(reorder_items),
-            "high_risk_count": high_risk_count,
-            "top_reorders": reorder_items[:5],
-            "total_reorders": len(reorder_items),
-            "csv_url": f"/api/v1/datasets/{dataset.id}/inventory.csv",
-        }
-        m3 = ChatMessage(
-            dataset_id=dataset.id,
-            role="assistant",
-            content=step3_content,
-            card_type="inventory_decision",
-        )
-        m3.payload = step3_payload
-        db.add(m3)
-        messages.append(m3)
+            step3_payload = {
+                "step": 3,
+                "title": "Turn Forecast into Decisions",
+                "reorder_actions_count": len(reorder_items),
+                "high_risk_count": high_risk_count,
+                "top_reorders": reorder_items[:6],
+                "total_reorders": len(reorder_items),
+                "csv_url": f"/api/v1/datasets/{dataset.id}/inventory.csv",
+            }
+            m3 = ChatMessage(
+                dataset_id=dataset.id,
+                role="assistant",
+                content=step3_content,
+                card_type="inventory_decision",
+            )
+            m3.payload = step3_payload
+            db.add(m3)
+            messages.append(m3)
+        # Message 4: Comprehensive AI Executive Summary & Predictions Briefing
+        if "executive_summary" not in existing_card_types:
+            active_classes = [f"{count} {cls}" for cls, count in class_dist.items() if count > 0]
+            class_str = ", ".join(active_classes) if active_classes else "catalog analyzed"
+            models_str = ", ".join(f"{m} ({c} items)" for m, c in model_counts.items())
 
-    db.commit()
+            summary_paragraphs = [
+                f"### Executive Summary & Predictions Report\n"
+                f"Here is the comprehensive sales & stocking briefing for **{dataset.name}** across **{len(forecasts)} products**:\n"
+            ]
+
+            # 1. Ingestion & Profile
+            summary_paragraphs.append(
+                f"**1. Sales History & Data Hygiene**\n"
+                f"We processed **{total_cleaned:,} records** from **{health.get('date_min', 'start')}** to **{health.get('date_max', 'end')}** "
+                f"({health.get('total_days', 0)} calendar days). AI mapped schema columns (`{col_map.get('date', 'date')}`, `{col_map.get('product', 'product')}`, `{col_map.get('quantity', 'quantity')}`). "
+                f"All missing intermediate dates were regularized with zero sales during active lifecycles. Demand distribution: {class_str}."
+            )
+
+            # 2. Forecast Predictions
+            top_prods_brief = "\n".join(
+                f"- **{p['product']}**: ~**{p['projected_units']:,} units** projected (80% range: {p['p10']:,} – {p['p90']:,} units) — *Model: {p['model']}*"
+                for p in top_projected[:4]
+            )
+            summary_paragraphs.append(
+                f"**2. Demand Forecasts & TimesFM Comparison**\n"
+                f"Catalog projected demand totals **{int(round(total_forecast_units)):,} units** over the upcoming 28-day horizon.\n"
+                f"Models were selected strictly on rolling backtest performance: {models_str}.\n"
+                f"Average backtest error (WAPE) is **~{avg_wape}%**.\n"
+                f"Key product demand projections:\n"
+                f"{top_prods_brief}"
+            )
+
+            # 3. Stock Decisions
+            if reorder_items:
+                reorder_bullets = "\n".join(
+                    f"- **{r['product']}**: Order **{r['recommended_qty']} units** (Reorder Point: {int(round(r['reorder_point']))}, Risk: {r['stockout_risk']})"
+                    for r in reorder_items[:5]
+                )
+                summary_paragraphs.append(
+                    f"**3. Reorder Decisions & Stocking Plan**\n"
+                    f"Based on a 7-day supplier lead time and 90% service level, **{len(reorder_items)} products** need reorders:\n"
+                    f"{reorder_bullets}\n\n"
+                    f"Click **'Download Purchase Order CSV'** in the card above to download your ready-to-send purchase order sheet."
+                )
+            else:
+                summary_paragraphs.append(
+                    f"**3. Reorder Decisions & Stocking Plan**\n"
+                    f"Current inventory levels are sufficient across all analyzed items. No emergency replenishment orders are required today."
+                )
+
+            summary_paragraphs.append(
+                f"---\n"
+                f"💡 *Ask me any questions below — for example:*\n"
+                f"- *'What should I reorder this week?'*\n"
+                f"- *'Which products have high stockout risk?'*\n"
+                f"- *'Why was AutoETS chosen instead of TimesFM for PROD_01?'*\n"
+                f"- *'Tell me about {top_projected[0]['product'] if top_projected else 'PROD_01'}'*"
+            )
+
+            m4 = ChatMessage(
+                dataset_id=dataset.id,
+                role="assistant",
+                content="\n\n".join(summary_paragraphs),
+                card_type="executive_summary",
+            )
+            db.add(m4)
+            messages.append(m4)
+
+        db.commit()
+
     return messages
 
 
