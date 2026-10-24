@@ -24,7 +24,7 @@ class DatasetUploadResponse(BaseModel):
     status: str
     detected_columns: List[str]
     sample_rows: List[Dict[str, Any]]
-    suggested_mapping: Dict[str, str]
+    suggested_mapping: Dict[str, Any]
     mapping_confidence: Dict[str, float]
     mapping_reasons: Dict[str, str]
     job_id: Optional[str] = None
@@ -38,7 +38,7 @@ class DatasetResponse(BaseModel):
     status: str
     row_count: Optional[int] = None
     product_count: Optional[int] = None
-    column_mapping: Optional[Dict[str, str]] = None
+    column_mapping: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
     error_message: Optional[str] = None

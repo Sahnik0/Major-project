@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from apps.api.app.config import settings
 from apps.api.app.db import Dataset, Job, get_db
+from apps.api.app.db import ChatMessage, Dataset, Job, ProductForecast, get_db
 from apps.api.app.jobs.runner import enqueue_cleaning_and_profiling
 from apps.api.app.schemas.dataset import (
     DatasetListResponse,
@@ -66,7 +67,7 @@ async def upload_dataset(
     # Read and inspect raw file
     try:
         raw_df = read_raw_dataframe(dest_path)
-        detected_columns, sample_rows, total_rows = inspect_raw_file(dest_path)
+        detected_columns, sample_rows, total_rows, meta = inspect_raw_file(dest_path, include_meta=True)
     except Exception as e:
         if dest_path.exists():
             dest_path.unlink()
@@ -79,9 +80,8 @@ async def upload_dataset(
             },
         )
 
-    # Generate heuristic column mapping suggestions
     # Generate heuristic & AI column mapping suggestions
-    suggested_mapping, confidences, reasons = suggest_column_mapping_heuristics(raw_df)
+    suggested_mapping, confidences, reasons = suggest_column_mapping_heuristics(raw_df, meta=meta)
 
     has_required = all(k in suggested_mapping for k in ("date", "product", "quantity"))
     status = "processing" if has_required else "mapping_pending"
@@ -403,6 +403,28 @@ def delete_dataset(dataset_id: str, db: Session = Depends(get_db)):
             status_code=404,
             detail={"code": "DATASET_NOT_FOUND", "message": f"Dataset '{dataset_id}' not found."},
         )
+
+    # Clean up associated database records explicitly
+    db.query(ChatMessage).filter(ChatMessage.dataset_id == dataset_id).delete(synchronize_session=False)
+    db.query(ProductForecast).filter(ProductForecast.dataset_id == dataset_id).delete(synchronize_session=False)
+    db.query(Job).filter(Job.dataset_id == dataset_id).delete(synchronize_session=False)
+
+    # Clean up files on disk if they exist
+    if dataset.file_path:
+        f_p = Path(dataset.file_path)
+        if f_p.exists() and "uploads" in str(f_p):
+            try:
+                f_p.unlink(missing_ok=True)
+            except Exception:
+                pass
+    if dataset.parquet_path:
+        p_p = Path(dataset.parquet_path)
+        if p_p.exists():
+            try:
+                p_p.unlink(missing_ok=True)
+            except Exception:
+                pass
+
     db.delete(dataset)
     db.commit()
     return {"status": "ok", "message": f"Dataset '{dataset_id}' deleted."}

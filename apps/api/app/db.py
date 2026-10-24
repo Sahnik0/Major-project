@@ -53,6 +53,9 @@ class Dataset(Base):
     forecasts = relationship(
         "ProductForecast", back_populates="dataset", cascade="all, delete-orphan"
     )
+    chat_messages = relationship(
+        "ChatMessage", back_populates="dataset", cascade="all, delete-orphan"
+    )
 
     @property
     def column_mapping(self) -> Any:
@@ -181,6 +184,7 @@ class ChatMessage(Base):
     )
 
     dataset = relationship("Dataset", backref="chat_messages")
+    dataset = relationship("Dataset", back_populates="chat_messages")
 
     @property
     def payload(self) -> Any:

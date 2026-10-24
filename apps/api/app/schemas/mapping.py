@@ -1,10 +1,10 @@
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
 
 class MappingConfirmationRequest(BaseModel):
-    mapping: Dict[str, str] = Field(
+    mapping: Dict[str, Any] = Field(
         ...,
         description="Dictionary of logical field name to source column name. Must include 'date', 'product', 'quantity'.",
     )

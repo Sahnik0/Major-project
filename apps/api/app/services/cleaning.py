@@ -142,6 +142,180 @@ def detect_outliers_iqr(series: pl.Series, multiplier: float = 3.0) -> Tuple[pl.
     return is_outlier, float(upper_bound)
 
 
+def _clean_and_regularize_stock_summary(
+    df: pl.DataFrame,
+    mapping_config: MappingConfirmationRequest,
+    dataset_id: str,
+) -> Tuple[pl.DataFrame, Dict[str, Any]]:
+    """
+    Cleans and regularizes an ERP Stock Summary / Inventory Snapshot dataset.
+    Aggregates products, calculates on-hand stock and sales metrics,
+    and synthesizes a regularized time series for foundation forecasting.
+    """
+    from datetime import date, timedelta
+    mapping = mapping_config.mapping
+    product_col = mapping.get("product") or "product"
+    qty_col = mapping.get("quantity") or "quantity"
+    stock_col = mapping.get("stock_on_hand")
+    rev_col = mapping.get("revenue")
+
+    raw_row_count = len(df)
+
+    # Extract date range from mapping metadata if available
+    date_range = mapping.get("_date_range")
+    if date_range and isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        try:
+            start_dt = date.fromisoformat(str(date_range[0]))
+            end_dt = date.fromisoformat(str(date_range[1]))
+        except Exception:
+            end_dt = date.today()
+            start_dt = end_dt - timedelta(days=180)
+    else:
+        end_dt = date.today()
+        start_dt = end_dt - timedelta(days=180)
+
+    total_days = max(14, (end_dt - start_dt).days + 1)
+
+    # Fill nulls and cast
+    exprs = [
+        pl.col(qty_col).fill_null(0.0).cast(pl.Float64).alias("qty"),
+    ]
+    if stock_col and stock_col in df.columns:
+        exprs.append(pl.col(stock_col).fill_null(0.0).cast(pl.Float64).alias("stock"))
+    else:
+        exprs.append(pl.lit(0.0).alias("stock"))
+
+    if rev_col and rev_col in df.columns:
+        exprs.append(pl.col(rev_col).fill_null(0.0).cast(pl.Float64).alias("rev"))
+    else:
+        exprs.append(pl.lit(0.0).alias("rev"))
+
+    work_df = df.with_columns(exprs)
+
+    # Aggregate by product
+    grouped = work_df.group_by(product_col).agg([
+        pl.col("qty").sum().alias("total_units_sold"),
+        pl.col("stock").sum().alias("current_stock"),
+        pl.col("rev").sum().alias("total_revenue"),
+    ]).filter(
+        pl.col(product_col).is_not_null()
+        & (pl.col(product_col).cast(pl.Utf8).str.strip_chars() != "")
+        & (pl.col(product_col).cast(pl.Utf8).str.to_uppercase() != "NA")
+    ).sort("total_units_sold", descending=True)
+
+    unique_products_count = len(grouped)
+
+    # Stock Health Categorization
+    lead_time_days = 7
+    z = 1.645
+    out_of_stock = []
+    critical = []
+    healthy = []
+    overstocked = []
+
+    for row in grouped.to_dicts():
+        p = str(row[product_col])
+        sold = float(row["total_units_sold"])
+        stock = float(row["current_stock"])
+        daily_rate = sold / total_days
+        rop = lead_time_days * daily_rate + z * np.sqrt(lead_time_days) * max(0.5, np.sqrt(max(0.0, daily_rate)))
+        order_qty = max(0, int(np.ceil(rop - stock)))
+
+        info = {
+            "product": p,
+            "sold": round(sold, 1),
+            "stock": round(stock, 1),
+            "rop": round(float(rop), 1),
+            "order_qty": order_qty,
+        }
+        if stock <= 0 and sold > 0:
+            out_of_stock.append(info)
+        elif stock < rop:
+            critical.append(info)
+        elif daily_rate > 0 and stock > daily_rate * 90:
+            overstocked.append(info)
+        else:
+            healthy.append(info)
+
+    # Synthesize time-series for top 100 products for rolling backtesting & TimesFM
+    top_items = grouped.head(100).to_dicts()
+    date_list = [start_dt + timedelta(days=i) for i in range(total_days)]
+    records = []
+    for item in top_items:
+        p_name = str(item[product_col])
+        sold = float(item["total_units_sold"])
+        stk = float(item["current_stock"])
+        rev = float(item["total_revenue"])
+        daily_rate = sold / total_days
+        for dt in date_list:
+            dow = dt.weekday()
+            cycle = 1.25 if dow in (5, 6) else 0.90
+            q = max(0.0, round(daily_rate * cycle, 2))
+            records.append({
+                "date": dt,
+                "product": p_name,
+                "quantity": q,
+                "stock_on_hand": stk,
+                "revenue": round(q * (rev / max(1.0, sold)), 2),
+            })
+
+    cleaned_df = pl.DataFrame(records).sort(["product", "date"])
+
+    # Persist Parquet
+    parquet_filename = f"{dataset_id}.parquet"
+    parquet_path = settings.PARQUET_DIR / parquet_filename
+    cleaned_df.write_parquet(parquet_path)
+
+    # Value calculation — dynamically detect any column representing monetary stock value
+    total_stock_units = float(work_df["stock"].sum())
+    total_stock_value = 0.0
+    import re as _re
+    _value_kw = ("value", "val", "amount", "amt", "worth", "valuation")
+    _exclude_kw = ("qty", "quantity", "rate_pct", "percent", "pct", "%", "sale", "sold")
+    for v_col in df.columns:
+        v_norm = _re.sub(r"[^a-z0-9]+", "_", v_col.strip().lower()).strip("_")
+        has_value_kw = any(kw in v_norm for kw in _value_kw)
+        has_exclude_kw = any(kw in v_norm for kw in _exclude_kw)
+        if has_value_kw and not has_exclude_kw:
+            try:
+                total_stock_value = float(df[v_col].fill_null(0.0).cast(pl.Float64).sum())
+                break
+            except Exception:
+                continue
+
+
+    cleaning_meta = {
+        "raw_row_count": raw_row_count,
+        "cleaned_row_count": len(cleaned_df),
+        "duplicate_count": 0,
+        "outlier_count": 0,
+        "parquet_path": str(parquet_path),
+        "granularity": "daily",
+        "frequency_code": "D",
+        "unique_products": unique_products_count,
+        "dataset_type": "stock_summary",
+        "stock_health": {
+            "out_of_stock": len(out_of_stock),
+            "critical": len(critical),
+            "healthy": len(healthy),
+            "overstocked": len(overstocked),
+        },
+        "top_out_of_stock": out_of_stock[:8],
+        "top_critical": critical[:8],
+        "top_moving": [
+            {"product": r["product"], "sold": r["sold"], "stock": r["stock"]}
+            for r in (out_of_stock + critical + healthy + overstocked)[:8]
+        ],
+        "total_stock_units": total_stock_units,
+        "total_stock_value": total_stock_value,
+        "date_min": start_dt.isoformat(),
+        "date_max": end_dt.isoformat(),
+        "total_days": total_days,
+    }
+
+    return cleaned_df, cleaning_meta
+
+
 def clean_and_regularize_dataset(
     df: pl.DataFrame,
     mapping_config: MappingConfirmationRequest,
@@ -159,7 +333,10 @@ def clean_and_regularize_dataset(
     8. Writes Parquet to disk.
     """
     mapping = mapping_config.mapping
-    date_col = mapping["date"]
+    date_col = mapping.get("date", "date")
+    if date_col == "__period__" or mapping.get("_dataset_type") == "stock_summary":
+        return _clean_and_regularize_stock_summary(df, mapping_config, dataset_id)
+
     product_col = mapping["product"]
     qty_col = mapping["quantity"]
     store_col = mapping.get("store")

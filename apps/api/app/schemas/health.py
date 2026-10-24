@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -59,4 +59,11 @@ class DataHealthReport(BaseModel):
     class_distribution: Dict[str, int]  # count of products per class
     issues: List[DataQualityIssue]
     products: List[ProductClassStats]
+    dataset_type: Optional[str] = None
+    stock_health: Optional[Dict[str, int]] = None
+    top_out_of_stock: Optional[List[Dict[str, Any]]] = None
+    top_critical: Optional[List[Dict[str, Any]]] = None
+    top_moving: Optional[List[Dict[str, Any]]] = None
+    total_stock_units: Optional[float] = None
+    total_stock_value: Optional[float] = None
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -246,4 +246,11 @@ def generate_data_health_report(
         class_distribution=class_distribution,
         issues=issues,
         products=product_stats_list,
+        dataset_type=cleaning_meta.get("dataset_type"),
+        stock_health=cleaning_meta.get("stock_health"),
+        top_out_of_stock=cleaning_meta.get("top_out_of_stock"),
+        top_critical=cleaning_meta.get("top_critical"),
+        top_moving=cleaning_meta.get("top_moving"),
+        total_stock_units=cleaning_meta.get("total_stock_units"),
+        total_stock_value=cleaning_meta.get("total_stock_value"),
     )

@@ -112,9 +112,16 @@ export function Sidebar({
                   onClick={(e) => {
                     e.stopPropagation();
                     if (confirm(`Delete "${d.name}"?`)) onDeleteDataset(d.id);
+                    onDeleteDataset(d.id);
                   }}
                   className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[#2f2f2f] text-[#8e8e8e] hover:text-rose-400 transition"
                   title="Delete"
+                  className={`p-1.5 rounded hover:bg-[#2f2f2f] text-[#8e8e8e] hover:text-rose-400 transition shrink-0 ${
+                    isSelected
+                      ? "opacity-70 hover:opacity-100"
+                      : "opacity-0 group-hover:opacity-100"
+                  }`}
+                  title={`Delete ${d.name}`}
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>

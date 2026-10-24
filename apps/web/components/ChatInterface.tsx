@@ -11,7 +11,16 @@ import {
   ArrowRight,
   ShieldCheck,
   Package,
+  ChevronDown,
+  ChevronUp,
+  BarChart3,
+  TrendingUp,
+  Sparkles,
+  Table,
+  Terminal,
+  RotateCcw,
 } from "lucide-react";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from "recharts";
 import { api, DatasetItem } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 
@@ -42,6 +51,7 @@ export function ChatInterface({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [showAllColumns, setShowAllColumns] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const zeroFileInputRef = useRef<HTMLInputElement>(null);
   const chatFileInputRef = useRef<HTMLInputElement>(null);
@@ -63,6 +73,16 @@ export function ChatInterface({
       console.error(err);
     } finally {
       scrollToBottom();
+    }
+  };
+
+  const handleResetChat = async () => {
+    if (!dataset) return;
+    try {
+      await api.resetChat(dataset.id);
+      await loadMessages(dataset.id);
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -180,6 +200,14 @@ export function ChatInterface({
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={handleResetChat}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2a2a2a] hover:bg-[#333333] border border-[#383838] text-[#8e8e8e] hover:text-rose-400 text-xs font-medium transition"
+            title="Clear conversation history"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Clear Chat</span>
+          </button>
           <a
             href={api.getInventoryCsvUrl(dataset.id)}
             download
@@ -259,21 +287,159 @@ export function ChatInterface({
                       </div>
                     )}
 
-                    {/* Demand Quadrant Distribution */}
-                    <div>
-                      <span className="text-[10px] text-[#8e8e8e] block mb-1.5">Syntetos-Boylan Demand Quadrant</span>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 text-[11px]">
-                        {Object.entries(m.payload.class_distribution || {}).map(([cls, count]) => (
-                          <div
-                            key={cls}
-                            className="bg-[#212121] px-2.5 py-1.5 rounded-lg border border-[#2e2e2e] flex items-center justify-between"
-                          >
-                            <span className="capitalize text-[#b4b4b4] text-[10px]">{cls}</span>
-                            <span className="font-semibold text-[#ececec]">{count as number}</span>
+                    {/* Understood Columns Accordion */}
+                    {m.payload.column_semantics && Object.keys(m.payload.column_semantics).length > 0 && (
+                      <div className="pt-1 border-t border-[#333333]">
+                        <button
+                          type="button"
+                          onClick={() => setShowAllColumns(!showAllColumns)}
+                          className="flex items-center justify-between w-full text-[11px] text-[#b4b4b4] hover:text-white transition py-1"
+                        >
+                          <span className="flex items-center gap-1.5 font-medium">
+                            <span>Understood Schema ({Object.keys(m.payload.column_semantics).length} Columns Auto-Parsed)</span>
+                          </span>
+                          {showAllColumns ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5 text-[#8e8e8e]" />}
+                        </button>
+
+                        {showAllColumns && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-2 pb-1 text-[11px]">
+                            {Object.entries(m.payload.column_semantics).map(([c, desc]) => (
+                              <div key={c} className="p-2 rounded-lg bg-[#212121] border border-[#2e2e2e]">
+                                <span className="font-mono text-emerald-400 text-[10px] block font-semibold">{c}</span>
+                                <span className="text-[#8e8e8e] text-[10px] leading-tight block mt-0.5">{desc as string}</span>
+                              </div>
+                            ))}
                           </div>
-                        ))}
+                        )}
                       </div>
-                    </div>
+                    )}
+
+                    {/* Stock Health Visualizer */}
+                    {m.payload.stock_health && (
+                      <div className="space-y-2 pt-1 border-t border-[#333333]">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-medium text-[#ececec]">Inventory Stock Health</span>
+                          <span className="text-[10px] text-[#8e8e8e]">
+                            {(m.payload.stock_health.out_of_stock || 0) + (m.payload.stock_health.critical || 0) + (m.payload.stock_health.healthy || 0) + (m.payload.stock_health.overstocked || 0)} items classified
+                          </span>
+                        </div>
+
+                        {/* Multi-segment bar */}
+                        <div className="h-2.5 w-full bg-[#1a1a1a] rounded-full overflow-hidden flex">
+                          {m.payload.stock_health.out_of_stock > 0 && (
+                            <div
+                              style={{ width: `${Math.max(4, (m.payload.stock_health.out_of_stock / (m.payload.total_products || 1)) * 100)}%` }}
+                              className="bg-rose-500 h-full"
+                              title={`Out of Stock: ${m.payload.stock_health.out_of_stock}`}
+                            />
+                          )}
+                          {m.payload.stock_health.critical > 0 && (
+                            <div
+                              style={{ width: `${Math.max(4, (m.payload.stock_health.critical / (m.payload.total_products || 1)) * 100)}%` }}
+                              className="bg-amber-500 h-full"
+                              title={`Critical / Below ROP: ${m.payload.stock_health.critical}`}
+                            />
+                          )}
+                          {m.payload.stock_health.healthy > 0 && (
+                            <div
+                              style={{ width: `${Math.max(4, (m.payload.stock_health.healthy / (m.payload.total_products || 1)) * 100)}%` }}
+                              className="bg-emerald-500 h-full"
+                              title={`Healthy: ${m.payload.stock_health.healthy}`}
+                            />
+                          )}
+                          {m.payload.stock_health.overstocked > 0 && (
+                            <div
+                              style={{ width: `${Math.max(4, (m.payload.stock_health.overstocked / (m.payload.total_products || 1)) * 100)}%` }}
+                              className="bg-indigo-500 h-full"
+                              title={`Overstocked: ${m.payload.stock_health.overstocked}`}
+                            />
+                          )}
+                        </div>
+
+                        {/* Metric badges */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[10px]">
+                          <div className="bg-[#212121] px-2 py-1 rounded-lg border border-[#2e2e2e] flex items-center justify-between">
+                            <span className="flex items-center gap-1.5 text-rose-400">
+                              <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                              Out of Stock
+                            </span>
+                            <span className="font-semibold text-white">{m.payload.stock_health.out_of_stock || 0}</span>
+                          </div>
+                          <div className="bg-[#212121] px-2 py-1 rounded-lg border border-[#2e2e2e] flex items-center justify-between">
+                            <span className="flex items-center gap-1.5 text-amber-400">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                              Critical (&lt;ROP)
+                            </span>
+                            <span className="font-semibold text-white">{m.payload.stock_health.critical || 0}</span>
+                          </div>
+                          <div className="bg-[#212121] px-2 py-1 rounded-lg border border-[#2e2e2e] flex items-center justify-between">
+                            <span className="flex items-center gap-1.5 text-emerald-400">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                              Healthy
+                            </span>
+                            <span className="font-semibold text-white">{m.payload.stock_health.healthy || 0}</span>
+                          </div>
+                          <div className="bg-[#212121] px-2 py-1 rounded-lg border border-[#2e2e2e] flex items-center justify-between">
+                            <span className="flex items-center gap-1.5 text-indigo-400">
+                              <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                              Overstocked
+                            </span>
+                            <span className="font-semibold text-white">{m.payload.stock_health.overstocked || 0}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Top Moving Brands Bar Chart */}
+                    {m.payload.top_moving && m.payload.top_moving.length > 0 && (
+                      <div className="space-y-1.5 pt-2 border-t border-[#333333]">
+                        <div className="flex items-center justify-between text-[11px] text-[#8e8e8e]">
+                          <span className="font-medium text-[#ececec]">Top Moving Brands (Units Sold vs Stock)</span>
+                          <span className="text-[10px]">Actual Volume</span>
+                        </div>
+                        <div className="h-36 w-full pt-1">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart
+                              data={m.payload.top_moving}
+                              layout="vertical"
+                              margin={{ top: 0, right: 15, left: 45, bottom: 0 }}
+                            >
+                              <XAxis type="number" hide />
+                              <YAxis
+                                type="category"
+                                dataKey="product"
+                                tick={{ fill: "#b4b4b4", fontSize: 10 }}
+                                width={75}
+                              />
+                              <Tooltip
+                                contentStyle={{ backgroundColor: "#1e1e1e", borderColor: "#333333", fontSize: "11px", borderRadius: "8px" }}
+                                itemStyle={{ color: "#ececec" }}
+                              />
+                              <Bar dataKey="sold" name="Units Sold" fill="#10b981" radius={[0, 4, 4, 0]} />
+                              <Bar dataKey="stock" name="Stock on Hand" fill="#6366f1" radius={[0, 4, 4, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Demand Quadrant Distribution */}
+                    {m.payload.class_distribution && (
+                      <div className="pt-1 border-t border-[#333333]">
+                        <span className="text-[10px] text-[#8e8e8e] block mb-1.5">Syntetos-Boylan Demand Quadrant</span>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 text-[11px]">
+                          {Object.entries(m.payload.class_distribution || {}).map(([cls, count]) => (
+                            <div
+                              key={cls}
+                              className="bg-[#212121] px-2.5 py-1.5 rounded-lg border border-[#2e2e2e] flex items-center justify-between"
+                            >
+                              <span className="capitalize text-[#b4b4b4] text-[10px]">{cls}</span>
+                              <span className="font-semibold text-[#ececec]">{count as number}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -298,29 +464,25 @@ export function ChatInterface({
                       ))}
                     </div>
 
-                    {/* Top Projected Products with Uncertainty Ranges */}
+                    {/* Top Projected Demand Chart */}
                     {m.payload.top_projected && m.payload.top_projected.length > 0 && (
                       <div className="space-y-1 pt-1">
                         <span className="text-[10px] text-[#8e8e8e] block mb-1">Top Demand Projections (28-Day Horizon)</span>
-                        <div className="space-y-1">
-                          {m.payload.top_projected.map((tp: any) => (
-                            <div
-                              key={tp.product}
-                              onClick={() => onInspectProduct(tp.product)}
-                              className="flex items-center justify-between p-2 rounded-lg bg-[#212121] border border-[#2e2e2e] hover:border-[#444444] cursor-pointer transition text-xs"
+                        <div className="h-32 w-full pt-1">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart
+                              data={m.payload.top_projected}
+                              margin={{ top: 5, right: 10, left: -20, bottom: 0 }}
                             >
-                              <div className="flex items-center gap-2">
-                                <span className="font-medium text-[#ececec]">{tp.product}</span>
-                                <span className="text-[10px] text-[#8e8e8e] font-mono">({tp.model})</span>
-                              </div>
-                              <div className="flex items-center gap-3">
-                                <span className="text-[11px] text-[#8e8e8e]">80% range: {tp.p10?.toLocaleString()} - {tp.p90?.toLocaleString()}</span>
-                                <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-medium text-[11px]">
-                                  ~{tp.projected_units?.toLocaleString()} units
-                                </span>
-                              </div>
-                            </div>
-                          ))}
+                              <XAxis dataKey="product" tick={{ fill: "#8e8e8e", fontSize: 9 }} />
+                              <YAxis tick={{ fill: "#8e8e8e", fontSize: 9 }} />
+                              <Tooltip
+                                contentStyle={{ backgroundColor: "#1e1e1e", borderColor: "#333333", fontSize: "11px", borderRadius: "8px" }}
+                                formatter={(value: any) => [`${Number(value).toLocaleString()} units`, "Projected Demand"]}
+                              />
+                              <Bar dataKey="projected_units" fill="#10b981" radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
                         </div>
                       </div>
                     )}
@@ -378,6 +540,136 @@ export function ChatInterface({
                   </div>
                 )}
 
+                {/* Schema Explanation Card */}
+                {m.card_type === "schema_explanation" && m.payload?.columns && (
+                  <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-2 mt-2">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-medium text-[#ececec]">Auto-Understood Columns & Definitions</span>
+                      <span className="text-[10px] text-emerald-400 font-mono">0 Configuration Required</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1 text-xs">
+                      {Object.entries(m.payload.columns).map(([col, desc]) => (
+                        <div key={col} className="p-2 rounded-lg bg-[#212121] border border-[#2e2e2e]">
+                          <div className="font-mono text-emerald-400 font-semibold text-[11px] mb-0.5">{col}</div>
+                          <div className="text-[#8e8e8e] text-[10px] leading-snug">{desc as string}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Top Movers Visualizer Card */}
+                {m.card_type === "top_movers" && m.payload?.top_moving && (
+                  <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-2 mt-2">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-medium text-[#ececec]">Top Selling Brands</span>
+                      <span className="text-[10px] text-[#8e8e8e]">Volume Comparison</span>
+                    </div>
+                    <div className="h-44 w-full pt-1">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={m.payload.top_moving}
+                          layout="vertical"
+                          margin={{ top: 0, right: 15, left: 45, bottom: 0 }}
+                        >
+                          <XAxis type="number" hide />
+                          <YAxis
+                            type="category"
+                            dataKey="product"
+                            tick={{ fill: "#b4b4b4", fontSize: 10 }}
+                            width={75}
+                          />
+                          <Tooltip
+                            contentStyle={{ backgroundColor: "#1e1e1e", borderColor: "#333333", fontSize: "11px", borderRadius: "8px" }}
+                          />
+                          <Bar dataKey="sold" name="Units Sold" fill="#10b981" radius={[0, 4, 4, 0]} />
+                          <Bar dataKey="stock" name="Stock on Hand" fill="#6366f1" radius={[0, 4, 4, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
+
+                {/* AI Agent Tool Result Card (Deterministic Tool Execution) */}
+                {m.card_type === "tool_result" && m.payload && (
+                  <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-3 mt-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] font-mono font-medium">
+                          <Sparkles className="w-3 h-3 text-emerald-400" />
+                          {m.payload.tool_name}
+                        </span>
+                        <span className="font-medium text-[#ececec] text-xs">
+                          {m.payload.title}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-[#8e8e8e] font-mono">
+                        Polars Engine
+                      </span>
+                    </div>
+
+                    {/* Chart preview if available */}
+                    {m.payload.chart_data && m.payload.chart_data.length > 0 && (
+                      <div className="h-44 w-full pt-1">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart
+                            data={m.payload.chart_data}
+                            layout="vertical"
+                            margin={{ top: 0, right: 15, left: 45, bottom: 0 }}
+                          >
+                            <XAxis type="number" hide />
+                            <YAxis
+                              type="category"
+                              dataKey="name"
+                              tick={{ fill: "#b4b4b4", fontSize: 10 }}
+                              width={75}
+                            />
+                            <Tooltip
+                              contentStyle={{ backgroundColor: "#1e1e1e", borderColor: "#333333", fontSize: "11px", borderRadius: "8px" }}
+                              formatter={(val: any) => [typeof val === "number" ? val.toLocaleString() : val, ""]}
+                            />
+                            <Bar dataKey="value" name="Value" fill="#10b981" radius={[0, 4, 4, 0]} />
+                            {m.payload.chart_data[0]?.sold !== undefined && (
+                              <Bar dataKey="sold" name="Units Sold" fill="#10b981" radius={[0, 4, 4, 0]} />
+                            )}
+                            {m.payload.chart_data[0]?.stock !== undefined && (
+                              <Bar dataKey="stock" name="Stock on Hand" fill="#6366f1" radius={[0, 4, 4, 0]} />
+                            )}
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+
+                    {/* Structured Table */}
+                    {m.payload.table_rows && m.payload.table_rows.length > 0 && (
+                      <div className="overflow-x-auto rounded-lg border border-[#2e2e2e]">
+                        <table className="w-full text-[11px] text-left">
+                          {m.payload.table_headers && (
+                            <thead className="bg-[#1f1f1f] text-[#8e8e8e] border-b border-[#2e2e2e]">
+                              <tr>
+                                {m.payload.table_headers.map((h: string, idx: number) => (
+                                  <th key={idx} className="px-3 py-1.5 font-medium">{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                          )}
+                          <tbody className="divide-y divide-[#2a2a2a] bg-[#212121]">
+                            {m.payload.table_rows.map((row: string[], rIdx: number) => (
+                              <tr key={rIdx} className="hover:bg-[#262626] transition">
+                                {row.map((cell: string, cIdx: number) => (
+                                  <td key={cIdx} className={`px-3 py-1.5 ${cIdx === 0 ? "text-[#ececec] font-medium" : "text-[#b4b4b4] font-mono"}`}>
+                                    {cell}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Focused Product Card */}
                 {m.card_type === "product_focus" && m.payload && (
                   <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-2 mt-2">
@@ -429,10 +721,12 @@ export function ChatInterface({
           {/* Suggestion Chips */}
           <div className="flex items-center gap-2 overflow-x-auto pb-1 text-[11px]">
             {[
+              "Top 5 brands by profit",
+              "Compare SXI and ARYN brands",
+              "Total profit by department",
               "What should I reorder this week?",
-              "Which products have high stockout risk?",
-              "Why was AutoETS chosen for PROD_01?",
-              "What data cleaning was done?",
+              "Summary statistics for Net Sale Qty",
+              "What do the columns in my file represent?",
             ].map((chip) => (
               <button
                 key={chip}

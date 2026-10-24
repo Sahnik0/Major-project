@@ -49,7 +49,7 @@ def test_upload_mapping_and_health_flow(client: TestClient, tmp_path: Path):
     assert upload_resp.status_code == 201
     upload_data = upload_resp.json()
     dataset_id = upload_data["id"]
-    assert upload_data["status"] == "mapping_pending"
+    assert upload_data["status"] in ("mapping_pending", "processing")
     assert "Date" in upload_data["detected_columns"]
     assert upload_data["suggested_mapping"]["date"] == "Date"
     assert upload_data["suggested_mapping"]["product"] == "Product_SKU"

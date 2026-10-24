@@ -44,7 +44,13 @@ def run_forecast_job_sync(
             for p in health_rep.get("products", [])
         }
 
-        unique_products = df["product"].unique().to_list()
+        # Sort products by total quantity descending so primary drivers are processed first
+        vol_by_prod = (
+            df.group_by("product")
+            .agg(pl.col("quantity").sum().alias("total_qty"))
+            .sort("total_qty", descending=True)
+        )
+        unique_products = vol_by_prod["product"].to_list()
         total_products = len(unique_products)
 
         # Delete existing forecasts for this dataset before regenerating
@@ -59,6 +65,9 @@ def run_forecast_job_sync(
 
         default_horizons = {"D": 28, "W": 8, "M": 3}
         effective_horizon = req.horizon if req.horizon != 28 else default_horizons.get(freq_code, 28)
+
+        # Speed optimization for large product catalogs (>25 items)
+        max_full_eval = 25
 
         for idx, prod in enumerate(unique_products):
             step_progress = int(25 + (idx / total_products) * 70)
@@ -94,14 +103,17 @@ def run_forecast_job_sync(
                 db.commit()
                 continue
 
-            # Run rolling origin backtesting & final model prediction with dynamic frequency
+            # Run rolling origin backtesting: top products get TimesFM & full folds, remainder get fast statistical baselines
+            eval_timesfm = req.include_timesfm if idx < max_full_eval else False
+            eval_folds = min(req.num_folds, 2) if idx < max_full_eval else 1
+
             b_res = run_rolling_origin_backtest_for_product(
                 df_product=p_df,
                 product_name=str(prod),
                 series_class=p_class,
                 horizon=effective_horizon,
-                num_folds=req.num_folds,
-                include_timesfm=req.include_timesfm,
+                num_folds=eval_folds,
+                include_timesfm=eval_timesfm,
                 freq=freq_code,
             )
 
@@ -114,6 +126,16 @@ def run_forecast_job_sync(
             hist_quantities = p_df["quantity"].to_numpy()
             hist_std = float(np.std(hist_quantities)) if len(hist_quantities) > 1 else 0.0
 
+            # Extract actual current on-hand stock if present
+            current_stock_val = None
+            if "stock_on_hand" in p_df.columns:
+                try:
+                    s_vals = p_df["stock_on_hand"].drop_nulls()
+                    if len(s_vals) > 0:
+                        current_stock_val = float(s_vals[-1])
+                except Exception:
+                    pass
+
             # Compute deterministic inventory recommendations
             inv_res = compute_inventory_advice(
                 product=str(prod),
@@ -123,7 +145,7 @@ def run_forecast_job_sync(
                 lead_time_days=req.lead_time_days,
                 review_period_days=req.review_period_days,
                 service_level=req.service_level,
-                current_stock=None,  # Global default: missing current stock
+                current_stock=current_stock_val,
             )
 
             # Stringify quantiles keys for JSON compatibility
@@ -167,7 +189,6 @@ def run_forecast_job_sync(
             dataset.status = "ready"
         job.status = "completed"
         job.progress = 100
-        job.current_step = "Forecast and inventory analysis completed"
         job.current_step = "Analysis complete. Predictions and inventory sizing ready."
         db.commit()
 
