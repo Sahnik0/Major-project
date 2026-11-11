@@ -35,6 +35,6 @@ up-cpu:
 	docker compose --profile cpu up --build
 
 clean:
-	rm -rf data/uploads/* data/parquet/* data/sqlite/* .pytest_cache
+	rm -rf data/uploads/* data/parquet/* data/exports/* data/sqlite/* .pytest_cache
 	touch data/uploads/.gitkeep data/parquet/.gitkeep data/sqlite/.gitkeep
 
