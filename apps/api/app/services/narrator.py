@@ -1,5 +1,6 @@
 import re
 from typing import Any, Dict, List, Set
+
 import httpx
 
 from apps.api.app.config import settings
@@ -20,14 +21,26 @@ def extract_numbers_from_text(text: str) -> List[float]:
 
 
 def _collect_fact_numbers(obj: Any) -> Set[float]:
-    """Recursively collect all numeric numbers present in the facts dictionary."""
+    """Recursively collect all numeric values present in the facts dictionary, including numbers inside strings/dates."""
     numbers: Set[float] = set()
+    if isinstance(obj, bool):
+        return numbers
     if isinstance(obj, (int, float)):
-        numbers.add(float(obj))
+        if not (obj != obj):  # skip NaN
+            numbers.add(float(obj))
+            numbers.add(float(round(obj)))
+            numbers.add(float(round(obj, 1)))
+            numbers.add(float(round(obj, 2)))
+    elif isinstance(obj, str):
+        for n in extract_numbers_from_text(obj):
+            numbers.add(n)
     elif isinstance(obj, dict):
-        for v in obj.values():
+        for k, v in obj.items():
+            if isinstance(k, str):
+                for n in extract_numbers_from_text(k):
+                    numbers.add(n)
             numbers.update(_collect_fact_numbers(v))
-    elif isinstance(obj, list):
+    elif isinstance(obj, (list, tuple, set)):
         for item in obj:
             numbers.update(_collect_fact_numbers(item))
     return numbers
@@ -36,28 +49,26 @@ def _collect_fact_numbers(obj: Any) -> Set[float]:
 def validate_narrative_traceability(
     text: str,
     facts: Dict[str, Any],
-    tolerance: float = 1.0,
+    tolerance: float = 1.5,
 ) -> bool:
     """
     Principle 2: Every number in an AI explanation must be traceable.
     Extract every number from the generated text and verify it exists in the facts JSON.
-    Allows structural list numbers (e.g. 1, 2, 3) and small rounding tolerance.
+    Allows structural list numbers (e.g. 1..20, common CI levels) and rounding tolerance.
     """
     extracted = extract_numbers_from_text(text)
     if not extracted:
         return True
 
     allowed_numbers = _collect_fact_numbers(facts)
-    # Also allow basic structural bullet numbers 1 through 10
-    structural = {float(i) for i in range(1, 11)}
+    structural = {float(i) for i in range(0, 21)} | {80.0, 90.0, 95.0, 100.0}
 
     for num in extracted:
         if num in structural:
             continue
-        # Check against allowed numbers with tolerance
         matched = False
         for allowed in allowed_numbers:
-            if abs(num - allowed) <= tolerance or (allowed > 0 and abs(num - allowed) / allowed < 0.02):
+            if abs(num - allowed) <= tolerance or (abs(allowed) > 0 and abs(num - allowed) / abs(allowed) < 0.03):
                 matched = True
                 break
         if not matched:

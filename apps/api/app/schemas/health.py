@@ -66,4 +66,7 @@ class DataHealthReport(BaseModel):
     top_moving: Optional[List[Dict[str, Any]]] = None
     total_stock_units: Optional[float] = None
     total_stock_value: Optional[float] = None
+    frequency_code: Optional[str] = None
+    row_grain: Optional[Dict[str, Any]] = None
+    total_columns: Optional[int] = None
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

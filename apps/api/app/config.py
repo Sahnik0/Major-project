@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     DATA_DIR: Path = BASE_DIR / "data"
     UPLOAD_DIR: Path = BASE_DIR / "data" / "uploads"
     PARQUET_DIR: Path = BASE_DIR / "data" / "parquet"
+    EXPORT_DIR: Path = BASE_DIR / "data" / "exports"
     SQLITE_DIR: Path = BASE_DIR / "data" / "sqlite"
     DATABASE_URL: str = f"sqlite:///{BASE_DIR}/data/sqlite/advisor.db"
 
@@ -53,4 +54,5 @@ settings = Settings()
 settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
 settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 settings.PARQUET_DIR.mkdir(parents=True, exist_ok=True)
+settings.EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 settings.SQLITE_DIR.mkdir(parents=True, exist_ok=True)

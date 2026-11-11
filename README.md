@@ -88,14 +88,19 @@ make up-cpu
 
 ## Core Pipeline Architecture
 
-1. **Ingestion:** Delimiter & character encoding auto-sniffing for `.csv` and `.xlsx` files.
-2. **Column Mapping:** Heuristic scoring for required (`date`, `product`, `quantity`) and optional attributes (`revenue`, `store`, `promo_flag`, `stock_on_hand`).
+1. **Universal Multi-Format Ingestion:** Auto-sniffs delimiters, encodings, and multi-row pre-headers across `.csv`, `.tsv`, `.txt`, `.xlsx`, `.xls`, `.json`, `.jsonl`, and `.parquet` files while coercing currency/percentage strings into clean numeric columns.
+2. **Immediate Row & Column Understanding:** Automatically classifies datasets across **Time-Series** (daily, weekly, monthly, quarterly, yearly — single-series or multi-entity), **ERP Stock Summaries**, and **Cross-Sectional Tabular** data, computing row grain, data types, min/max/avg ranges, and category distributions with zero deadlocks.
 3. **Cleaning & Regularization:**
-   - Resolves day-first vs month-first date ambiguities.
-   - Separates negative returns.
-   - **Active-Period Zero-Filling:** Zeroes are filled strictly between the product's first and last observed sale. Pre-launch periods are left untouched.
-   - Outlier detection via IQR ($3 \times \text{IQR}$) with optional capping.
-4. **Data Health Profiling:** Syntetos-Boylan demand classification (smooth, erratic, intermittent, lumpy, short_history, inactive).
-5. **Deterministic Inventory Advice:** Pure Python calculation of reorder points, safety stocks, and order quantities with zero hallucination.
-6. **AI Explanation & Validation:** Gemma local narration with strict number verification against factual data.
+   - Resolves day-first vs month-first date ambiguities and preserves natural cadence (daily through yearly).
+   - Separates negative returns and distinguishes additive volumes from non-additive rates/averages.
+   - **Active-Period Zero-Filling:** Zeroes are filled strictly between the series' first and last observed period.
+   - Outlier detection via IQR & Z-score with optional capping.
+4. **Full AI Data Analyst (DuckDB SQL + Polars):**
+   - Executes read-only DuckDB SQL queries (`WHERE`, `GROUP BY`, `HAVING`, window functions, ratios, pivots, date bucketing) with automatic schema grounding and SQL self-repair.
+   - Built-in correlation/driver discovery, anomaly detection, group comparisons, and multi-turn chat context.
+5. **On-Demand Future Predictions & Inventory Advice:**
+   - Rolling-origin backtesting across TimesFM and statistical baselines (AutoETS, AutoARIMA, SeasonalNaive, Croston, TSB) for any temporal column or filtered slice, plus deterministic reorder-point and safety-stock math.
+6. **Custom CSV / Excel Generation:**
+   - Ask in plain English (or via `POST /api/v1/datasets/{id}/query`) to filter, transform, aggregate, or forecast data into a new downloadable `.csv` and `.xlsx` file.
+7. **Verified Local AI Narration:** Gemma via Ollama explains computed facts with strict numerical traceability validation.
 

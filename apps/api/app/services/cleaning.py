@@ -93,8 +93,8 @@ def infer_natural_frequency(series: pl.Series) -> Tuple[str, str]:
     """
     Dynamically infers the time granularity of historical dates without hardcoding.
     Returns:
-        interval: Polars date_range interval string ('1d', '1w', '1mo')
-        freq_code: Pandas/TimesFM frequency code ('D', 'W', 'M')
+        interval: Polars date_range interval string ('1d', '1w', '1mo', '1q', '1y')
+        freq_code: Pandas/TimesFM frequency code ('D', 'W', 'M', 'Q', 'Y')
     """
     unique_dates = series.drop_nulls().unique().sort().to_list()
     if len(unique_dates) < 2:
@@ -118,6 +118,10 @@ def infer_natural_frequency(series: pl.Series) -> Tuple[str, str]:
         return "1w", "W"
     elif 25 <= median_delta <= 35:
         return "1mo", "M"
+    elif 80 <= median_delta <= 100:
+        return "1q", "Q"
+    elif 350 <= median_delta <= 380:
+        return "1y", "Y"
     else:
         return "1d", "D"
 
@@ -316,49 +320,153 @@ def _clean_and_regularize_stock_summary(
     return cleaned_df, cleaning_meta
 
 
+def _clean_and_regularize_tabular(
+    df: pl.DataFrame,
+    mapping_config: MappingConfirmationRequest,
+    dataset_id: str,
+) -> Tuple[pl.DataFrame, Dict[str, Any]]:
+    """
+    Cleans and prepares a general cross-sectional / tabular business dataset
+    (without forcing a synthetic date axis), preserving all columns for SQL/Polars analysis.
+    """
+    mapping = mapping_config.mapping
+    product_col = mapping.get("product")
+    qty_col = mapping.get("quantity")
+
+    raw_row_count = len(df)
+    duplicate_count = max(0, len(df) - len(df.unique()))
+    work_df = df.unique() if (mapping_config.drop_duplicates and duplicate_count > 0) else df
+
+    # Determine unique entities count and top entities
+    unique_products_count = len(work_df)
+    top_moving = []
+    outlier_count = 0
+
+    if product_col and product_col in work_df.columns:
+        unique_products_count = int(work_df[product_col].drop_nulls().n_unique())
+        if qty_col and qty_col in work_df.columns and work_df[qty_col].dtype in (
+            pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64
+        ):
+            is_out, _ = detect_outliers_iqr(work_df[qty_col].fill_null(0.0).cast(pl.Float64))
+            outlier_count = int(is_out.sum())
+            grp = (
+                work_df.filter(pl.col(product_col).is_not_null())
+                .group_by(product_col)
+                .agg(pl.col(qty_col).fill_null(0.0).cast(pl.Float64).sum().alias("metric_sum"))
+                .sort("metric_sum", descending=True)
+                .head(8)
+            )
+            top_moving = [
+                {"product": str(r[product_col]), "sold": round(float(r["metric_sum"]), 2), "stock": 0}
+                for r in grp.to_dicts()
+            ]
+        else:
+            grp = (
+                work_df.filter(pl.col(product_col).is_not_null())
+                .group_by(product_col)
+                .len()
+                .sort("len", descending=True)
+                .head(8)
+            )
+            top_moving = [
+                {"product": str(r[product_col]), "sold": int(r["len"]), "stock": 0}
+                for r in grp.to_dicts()
+            ]
+
+    parquet_filename = f"{dataset_id}.parquet"
+    parquet_path = settings.PARQUET_DIR / parquet_filename
+    work_df.write_parquet(parquet_path)
+
+    cleaning_meta = {
+        "raw_row_count": raw_row_count,
+        "cleaned_row_count": len(work_df),
+        "duplicate_count": int(duplicate_count),
+        "outlier_count": outlier_count,
+        "parquet_path": str(parquet_path),
+        "granularity": "cross_sectional",
+        "frequency_code": "NONE",
+        "unique_products": unique_products_count,
+        "dataset_type": "tabular",
+        "top_moving": top_moving,
+        "total_columns": len(work_df.columns),
+        "row_grain": mapping.get("_row_grain"),
+    }
+    return work_df, cleaning_meta
+
+
+def _is_non_additive_metric(col_name: str) -> bool:
+    """Returns True if metric represents a rate, average, price, index, or percentage rather than additive volume."""
+    import re as _re
+
+    norm = _re.sub(r"[^a-z0-9]+", "_", col_name.strip().lower()).strip("_")
+    tokens = set(norm.split("_"))
+    additive_tokens = {"qty", "quantity", "units", "sold", "volume", "count", "revenue", "sales", "amount", "profit", "total"}
+    if tokens & additive_tokens:
+        return False
+    rate_tokens = {"ma", "avg", "average", "mean", "median", "price", "rate", "pct", "percent", "index", "ratio", "margin", "score", "close"}
+    return bool(tokens & rate_tokens) or "%" in col_name
+
+
 def clean_and_regularize_dataset(
     df: pl.DataFrame,
     mapping_config: MappingConfirmationRequest,
     dataset_id: str,
 ) -> Tuple[pl.DataFrame, Dict[str, Any]]:
     """
-    Executes Phase 1 data cleaning:
-    1. Renames source columns to logical names.
-    2. Parses dates with ambiguity resolution.
-    3. Handles duplicates according to user preference.
-    4. Separates negative quantities (returns).
-    5. Aggregates to regular grid (daily or weekly).
-    6. Fills gaps with 0 ONLY between first and last sale of each product.
-    7. Flags outliers (and optionally caps them).
-    8. Writes Parquet to disk.
+    Executes universal data cleaning and regularization:
+    - Stock Summary mode for ERP inventory snapshots
+    - Tabular mode for cross-sectional datasets without dates
+    - Time Series mode (daily, weekly, monthly, quarterly, yearly; single-series or multi-series)
     """
     mapping = mapping_config.mapping
     date_col = mapping.get("date", "date")
     if date_col == "__period__" or mapping.get("_dataset_type") == "stock_summary":
         return _clean_and_regularize_stock_summary(df, mapping_config, dataset_id)
+    if date_col == "__tabular__" or mapping.get("_dataset_type") == "tabular" or date_col not in df.columns:
+        return _clean_and_regularize_tabular(df, mapping_config, dataset_id)
 
-    product_col = mapping["product"]
+    product_col = mapping.get("product", "__overall__")
     qty_col = mapping["quantity"]
     store_col = mapping.get("store")
     promo_col = mapping.get("promo_flag")
     rev_col = mapping.get("revenue")
+    composite_cols = mapping.get("_composite_product_cols")
 
     raw_row_count = len(df)
+    working_source = df
+
+    # Synthesize product column if single-series or composite-grain time series
+    if composite_cols and isinstance(composite_cols, list) and all(c in working_source.columns for c in composite_cols):
+        c1, c2 = composite_cols[0], composite_cols[1]
+        working_source = working_source.with_columns(
+            (
+                pl.col(c1).cast(pl.Utf8).fill_null("Unknown")
+                + pl.lit(f" ({c2}=")
+                + pl.col(c2).cast(pl.Utf8).fill_null("?")
+                + pl.lit(")")
+            ).alias("__synth_product__")
+        )
+        effective_prod_col = "__synth_product__"
+    elif product_col == "__overall__" or product_col not in working_source.columns:
+        working_source = working_source.with_columns(pl.lit("Overall").alias("__synth_product__"))
+        effective_prod_col = "__synth_product__"
+    else:
+        effective_prod_col = product_col
 
     # 1. Column renaming
     rename_dict = {
         date_col: "date",
-        product_col: "product",
+        effective_prod_col: "product",
         qty_col: "raw_quantity",
     }
-    if store_col and store_col in df.columns:
+    if store_col and store_col in working_source.columns and store_col not in rename_dict:
         rename_dict[store_col] = "store"
-    if promo_col and promo_col in df.columns:
+    if promo_col and promo_col in working_source.columns and promo_col not in rename_dict:
         rename_dict[promo_col] = "promo_flag"
-    if rev_col and rev_col in df.columns:
+    if rev_col and rev_col in working_source.columns and rev_col not in rename_dict:
         rename_dict[rev_col] = "revenue"
 
-    work_df = df.rename(rename_dict)
+    work_df = working_source.rename(rename_dict)
 
     # Ensure required columns are present
     selected_cols = ["date", "product", "raw_quantity"]
@@ -416,15 +524,21 @@ def clean_and_regularize_dataset(
 
     # Granularity adjustment
     if mapping_config.aggregation_granularity == "weekly":
-        # Truncate to Monday start
         work_df = work_df.with_columns(pl.col("date").dt.truncate("1w").alias("date"))
 
-    # Group by key and date
-    agg_exprs = [
-        pl.col("quantity").sum().alias("quantity"),
-        pl.col("gross_quantity").sum().alias("gross_quantity"),
-        pl.col("returns_quantity").sum().alias("returns_quantity"),
-    ]
+    use_mean_agg = _is_non_additive_metric(qty_col)
+    if use_mean_agg:
+        agg_exprs = [
+            pl.col("quantity").mean().alias("quantity"),
+            pl.col("gross_quantity").mean().alias("gross_quantity"),
+            pl.col("returns_quantity").mean().alias("returns_quantity"),
+        ]
+    else:
+        agg_exprs = [
+            pl.col("quantity").sum().alias("quantity"),
+            pl.col("gross_quantity").sum().alias("gross_quantity"),
+            pl.col("returns_quantity").sum().alias("returns_quantity"),
+        ]
     if "revenue" in work_df.columns:
         agg_exprs.append(pl.col("revenue").cast(pl.Float64).sum().alias("revenue"))
     if "promo_flag" in work_df.columns:
@@ -432,8 +546,24 @@ def clean_and_regularize_dataset(
 
     grouped_df = work_df.group_by(group_keys + ["date"]).agg(agg_exprs).sort(group_keys + ["date"])
 
-    # 6. Regular grid expansion (zero-filling ONLY between first and last sale of each product)
-    # Process per product group
+    # 6. Regular grid expansion (zero-filling ONLY between first and last observation of each product)
+    inferred_interval, inferred_freq = infer_natural_frequency(grouped_df["date"]) if len(grouped_df) > 0 else ("1d", "D")
+    n_unique_dates = int(grouped_df["date"].n_unique()) if len(grouped_df) > 0 else 0
+
+    if mapping_config.aggregation_granularity == "weekly":
+        interval = "1w"
+        inferred_freq = "W"
+    elif inferred_freq in ("M", "Q", "Y") and n_unique_dates >= 4:
+        # Preserve monthly / quarterly / yearly cadence instead of exploding into fake daily zeros
+        interval = inferred_interval
+    elif inferred_freq == "W" and n_unique_dates >= 6 and mapping_config.aggregation_granularity != "daily":
+        interval = "1w"
+    else:
+        interval = "1d"
+        inferred_freq = "D"
+
+    all_observed_dates = grouped_df["date"].unique().sort() if len(grouped_df) > 0 else pl.Series("date", [], dtype=pl.Date)
+
     filled_dfs = []
     unique_products = grouped_df["product"].unique().to_list()
     total_outliers = 0
@@ -446,21 +576,18 @@ def clean_and_regularize_dataset(
         min_date = prod_df["date"].min()
         max_date = prod_df["date"].max()
 
-        # Dynamically determine calendar grid interval from actual dates
-        inferred_interval, inferred_freq = infer_natural_frequency(grouped_df["date"])
-        if mapping_config.aggregation_granularity == "weekly":
-            interval = "1w"
-        elif mapping_config.aggregation_granularity == "daily":
-            interval = "1d"
+        if interval in ("1mo", "1q", "1y"):
+            # Align to observed monthly/quarterly/yearly period timestamps so month-end dates (30th vs 31st) match cleanly
+            full_dates = all_observed_dates.filter(
+                (all_observed_dates >= min_date) & (all_observed_dates <= max_date)
+            ).alias("date")
         else:
-            interval = inferred_interval
-
-        full_dates = pl.date_range(
-            start=min_date,
-            end=max_date,
-            interval=interval,
-            eager=True,
-        ).alias("date")
+            full_dates = pl.date_range(
+                start=min_date,
+                end=max_date,
+                interval=interval,
+                eager=True,
+            ).alias("date")
 
         grid_df = pl.DataFrame({"date": full_dates, "product": [prod] * len(full_dates)})
 
@@ -504,15 +631,26 @@ def clean_and_regularize_dataset(
     parquet_path = settings.PARQUET_DIR / parquet_filename
     cleaned_df.write_parquet(parquet_path)
 
+    granularity_map = {
+        "1d": "daily",
+        "1w": "weekly",
+        "1mo": "monthly",
+        "1q": "quarterly",
+        "1y": "yearly",
+    }
+
     cleaning_meta = {
         "raw_row_count": raw_row_count,
         "cleaned_row_count": len(cleaned_df),
         "duplicate_count": int(duplicate_count),
         "outlier_count": total_outliers,
         "parquet_path": str(parquet_path),
-        "granularity": "weekly" if interval == "1w" else ("monthly" if interval == "1mo" else "daily"),
+        "granularity": granularity_map.get(interval, "daily"),
         "frequency_code": inferred_freq,
         "unique_products": len(unique_products),
+        "dataset_type": "time_series",
+        "total_columns": len(df.columns),
+        "row_grain": mapping.get("_row_grain"),
     }
 
     return cleaned_df, cleaning_meta

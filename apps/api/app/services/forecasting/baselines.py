@@ -19,10 +19,48 @@ from apps.api.app.services.forecasting.base import Forecaster, ForecastPredictio
 
 
 def _generate_future_dates(last_date: date, horizon: int, freq: str = "D") -> List[str]:
-    """Generate ISO date strings for the forecast horizon."""
-    if freq.upper() in ("W", "1W"):
+    """Generate ISO date strings for the forecast horizon across daily, weekly, monthly, quarterly, or yearly frequencies."""
+    f = freq.upper()
+    if f in ("W", "1W"):
         return [(last_date + timedelta(weeks=i + 1)).isoformat() for i in range(horizon)]
+    if f in ("M", "1M", "1MO", "ME", "MS"):
+        ts = pd.Timestamp(last_date)
+        is_month_end = ts.is_month_end
+        return [
+            ((ts + pd.offsets.MonthEnd(i + 1)) if is_month_end else (ts + pd.DateOffset(months=i + 1))).date().isoformat()
+            for i in range(horizon)
+        ]
+    if f in ("Q", "1Q", "QE", "QS"):
+        ts = pd.Timestamp(last_date)
+        is_month_end = ts.is_month_end
+        return [
+            ((ts + pd.offsets.MonthEnd(3 * (i + 1))) if is_month_end else (ts + pd.DateOffset(months=3 * (i + 1)))).date().isoformat()
+            for i in range(horizon)
+        ]
+    if f in ("Y", "1Y", "YE", "YS", "A"):
+        ts = pd.Timestamp(last_date)
+        return [(ts + pd.DateOffset(years=i + 1)).date().isoformat() for i in range(horizon)]
     return [(last_date + timedelta(days=i + 1)).isoformat() for i in range(horizon)]
+
+
+def _infer_series_freq_code(dates: List[date]) -> str:
+    if len(dates) < 2:
+        return "D"
+    deltas = [(dates[i + 1] - dates[i]).days for i in range(len(dates) - 1) if (dates[i + 1] - dates[i]).days > 0]
+    if not deltas:
+        return "D"
+    med = float(np.median(deltas))
+    if med <= 2:
+        return "D"
+    if 5 <= med <= 10:
+        return "W"
+    if 25 <= med <= 35:
+        return "M"
+    if 80 <= med <= 100:
+        return "Q"
+    if 350 <= med <= 380:
+        return "Y"
+    return "D"
 
 
 def compute_residual_quantiles(
@@ -60,12 +98,14 @@ class NaiveForecaster(Forecaster):
         self.last_value = 0.0
         self.y_train: np.ndarray = np.array([])
         self.last_date: Optional[date] = None
+        self.freq_code: str = "D"
 
     def fit(self, df: pl.DataFrame, target_col: str = "quantity", date_col: str = "date") -> "NaiveForecaster":
         self.y_train = df[target_col].to_numpy()
         self.last_value = float(self.y_train[-1]) if len(self.y_train) > 0 else 0.0
         dates = df[date_col].to_list()
         self.last_date = dates[-1] if dates else date.today()
+        self.freq_code = _infer_series_freq_code(dates)
         return self
 
     def predict(self, horizon: int, quantiles: Optional[List[float]] = None) -> ForecastPrediction:
@@ -77,7 +117,7 @@ class NaiveForecaster(Forecaster):
         in_sample[0] = self.y_train[0] if len(self.y_train) > 0 else 0.0
 
         q_dict = compute_residual_quantiles(self.y_train, in_sample, point, quantiles)
-        future_dates = _generate_future_dates(self.last_date, horizon)
+        future_dates = _generate_future_dates(self.last_date, horizon, self.freq_code)
 
         return ForecastPrediction(
             dates=future_dates,
@@ -94,11 +134,13 @@ class SeasonalNaiveForecaster(Forecaster):
         self.season_length = season_length
         self.y_train: np.ndarray = np.array([])
         self.last_date: Optional[date] = None
+        self.freq_code: str = "D"
 
     def fit(self, df: pl.DataFrame, target_col: str = "quantity", date_col: str = "date") -> "SeasonalNaiveForecaster":
         self.y_train = df[target_col].to_numpy()
         dates = df[date_col].to_list()
         self.last_date = dates[-1] if dates else date.today()
+        self.freq_code = _infer_series_freq_code(dates)
         return self
 
     def predict(self, horizon: int, quantiles: Optional[List[float]] = None) -> ForecastPrediction:
@@ -113,6 +155,7 @@ class SeasonalNaiveForecaster(Forecaster):
             fallback.y_train = self.y_train
             fallback.last_value = self.y_train[-1] if n > 0 else 0.0
             fallback.last_date = self.last_date
+            fallback.freq_code = self.freq_code
             res = fallback.predict(horizon, quantiles)
             res.model_name = self.name
             return res
@@ -126,7 +169,7 @@ class SeasonalNaiveForecaster(Forecaster):
         in_sample[:m] = self.y_train[:m]
 
         q_dict = compute_residual_quantiles(self.y_train, in_sample, point, quantiles)
-        future_dates = _generate_future_dates(self.last_date, horizon)
+        future_dates = _generate_future_dates(self.last_date, horizon, self.freq_code)
 
         return ForecastPrediction(
             dates=future_dates,
@@ -143,12 +186,14 @@ class HistoricAverageForecaster(Forecaster):
         self.mean_val = 0.0
         self.y_train: np.ndarray = np.array([])
         self.last_date: Optional[date] = None
+        self.freq_code: str = "D"
 
     def fit(self, df: pl.DataFrame, target_col: str = "quantity", date_col: str = "date") -> "HistoricAverageForecaster":
         self.y_train = df[target_col].to_numpy()
         self.mean_val = float(np.mean(self.y_train)) if len(self.y_train) > 0 else 0.0
         dates = df[date_col].to_list()
         self.last_date = dates[-1] if dates else date.today()
+        self.freq_code = _infer_series_freq_code(dates)
         return self
 
     def predict(self, horizon: int, quantiles: Optional[List[float]] = None) -> ForecastPrediction:
@@ -158,7 +203,7 @@ class HistoricAverageForecaster(Forecaster):
         point = np.full(horizon, max(0.0, self.mean_val), dtype=np.float64)
         in_sample = np.full_like(self.y_train, self.mean_val)
         q_dict = compute_residual_quantiles(self.y_train, in_sample, point, quantiles)
-        future_dates = _generate_future_dates(self.last_date, horizon)
+        future_dates = _generate_future_dates(self.last_date, horizon, self.freq_code)
 
         return ForecastPrediction(
             dates=future_dates,
@@ -179,15 +224,17 @@ class StatsForecastBaseWrapper(Forecaster):
         self.df_pandas: Optional[pd.DataFrame] = None
         self.last_date: Optional[date] = None
         self.y_train: np.ndarray = np.array([])
+        self.freq_code: str = "D"
 
     def fit(self, df: pl.DataFrame, target_col: str = "quantity", date_col: str = "date") -> "StatsForecastBaseWrapper":
         self.y_train = df[target_col].to_numpy()
         dates = df[date_col].to_list()
         self.last_date = dates[-1] if dates else date.today()
+        self.freq_code = _infer_series_freq_code(dates)
 
         self.df_pandas = pd.DataFrame({
             "unique_id": ["series_1"] * len(df),
-            "ds": pd.to_datetime(df[date_col].to_list()),
+            "ds": pd.to_datetime(dates),
             "y": df[target_col].to_numpy().astype(np.float64),
         })
         return self
@@ -196,8 +243,11 @@ class StatsForecastBaseWrapper(Forecaster):
         if quantiles is None:
             quantiles = [0.1, 0.5, 0.9]
 
+        sf_freq_map = {"D": "D", "W": "W", "M": "ME", "Q": "QE", "Y": "YE"}
+        sf_freq = sf_freq_map.get(self.freq_code, "D")
+
         try:
-            sf = StatsForecast(models=[self.model_obj], freq="D", n_jobs=1)
+            sf = StatsForecast(models=[self.model_obj], freq=sf_freq, n_jobs=1)
             sf.fit(self.df_pandas)
 
             # Request 80% prediction interval for 10% and 90% quantiles
@@ -207,7 +257,6 @@ class StatsForecastBaseWrapper(Forecaster):
             if model_col in pred_df.columns:
                 point = np.maximum(0.0, pred_df[model_col].to_numpy())
             else:
-                # First non-id, non-ds col
                 val_cols = [c for c in pred_df.columns if c not in ("unique_id", "ds")]
                 point = np.maximum(0.0, pred_df[val_cols[0]].to_numpy())
 
@@ -224,25 +273,23 @@ class StatsForecastBaseWrapper(Forecaster):
                     elif abs(q - 0.5) < 1e-4:
                         q_dict[q] = [round(float(v), 2) for v in point]
                     else:
-                        # Interpolate
                         weight = (q - 0.1) / (0.9 - 0.1)
                         interp = pred_df[lo_col].to_numpy() + weight * (pred_df[hi_col].to_numpy() - pred_df[lo_col].to_numpy())
                         q_dict[q] = [round(float(v), 2) for v in np.maximum(0.0, interp)]
             else:
-                # Empirical residual fallback
                 in_sample = np.full_like(self.y_train, float(np.mean(point)))
                 q_dict = compute_residual_quantiles(self.y_train, in_sample, point, quantiles)
 
         except Exception:
-            # Robust fallback to seasonal naive or naive on fit error
             fallback = SeasonalNaiveForecaster(season_length=self.season_length)
             fallback.y_train = self.y_train
             fallback.last_date = self.last_date
+            fallback.freq_code = self.freq_code
             res = fallback.predict(horizon, quantiles)
             res.model_name = self.name
             return res
 
-        future_dates = _generate_future_dates(self.last_date, horizon)
+        future_dates = _generate_future_dates(self.last_date, horizon, self.freq_code)
         return ForecastPrediction(
             dates=future_dates,
             point_forecast=[round(float(v), 2) for v in point],

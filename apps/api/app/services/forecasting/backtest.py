@@ -59,6 +59,8 @@ def run_rolling_origin_backtest_for_product(
             season_length = 4
         elif freq.upper().startswith("M"):
             season_length = 12
+        elif freq.upper().startswith("Q"):
+            season_length = 4
         else:
             season_length = 1
 

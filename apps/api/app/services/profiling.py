@@ -44,7 +44,14 @@ def calculate_syntetos_boylan(
             return "inactive", float(round(n_periods / k_nonzero, 3)), 0.0
 
     # 2. Short history check
-    min_req = min_periods if granularity == "daily" else settings.MIN_SERIES_LENGTH_WEEKLY
+    min_req_by_gran = {
+        "daily": min_periods,
+        "weekly": settings.MIN_SERIES_LENGTH_WEEKLY,
+        "monthly": 6,
+        "quarterly": 6,
+        "yearly": 4,
+    }
+    min_req = min_req_by_gran.get(granularity, settings.MIN_SERIES_LENGTH_WEEKLY)
     if n_periods < min_req:
         adi = round(float(n_periods / k_nonzero), 3) if k_nonzero > 0 else float("inf")
         cv2 = 0.0
@@ -89,14 +96,88 @@ def generate_data_health_report(
 ) -> DataHealthReport:
     """
     Analyzes the regularized dataset to produce the complete data-health report.
+    Supports time_series, stock_summary, and general cross-sectional tabular datasets.
     """
     granularity = cleaning_meta.get("granularity", "daily")
+    dataset_type = cleaning_meta.get("dataset_type")
+
+    # Cross-sectional / general tabular dataset (no date column)
+    if dataset_type == "tabular" or "date" not in cleaned_df.columns or "product" not in cleaned_df.columns:
+        issues_tab: List[DataQualityIssue] = []
+        dup_cnt = cleaning_meta.get("duplicate_count", 0)
+        if dup_cnt > 0:
+            issues_tab.append(
+                DataQualityIssue(
+                    issue_type="duplicates",
+                    severity="info",
+                    title=f"{dup_cnt} duplicate rows detected",
+                    description="Identical rows were detected in the uploaded spreadsheet.",
+                    action_taken="Preserved in raw table (or deduplicated if requested); SQL queries can use DISTINCT.",
+                    affected_count=dup_cnt,
+                )
+            )
+        out_cnt = cleaning_meta.get("outlier_count", 0)
+        if out_cnt > 0:
+            issues_tab.append(
+                DataQualityIssue(
+                    issue_type="outliers",
+                    severity="info",
+                    title=f"{out_cnt} extreme numeric values detected",
+                    description="Values exceeded 3x the interquartile range on the primary numeric measure.",
+                    action_taken="Retained for accurate full-dataset SQL and statistical queries.",
+                    affected_count=out_cnt,
+                )
+            )
+        null_cells = sum(int(cleaned_df[c].null_count()) for c in cleaned_df.columns)
+        if null_cells > 0:
+            issues_tab.append(
+                DataQualityIssue(
+                    issue_type="missing_values",
+                    severity="info",
+                    title=f"{null_cells:,} missing/null cell values across columns",
+                    description="Some rows contain blank or NA cells in optional attributes.",
+                    action_taken="Handled safely with null-aware aggregations during analysis.",
+                    affected_count=null_cells,
+                )
+            )
+
+        return DataHealthReport(
+            dataset_id=dataset_id,
+            dataset_name=dataset_name,
+            total_rows_raw=cleaning_meta.get("raw_row_count", len(cleaned_df)),
+            total_rows_cleaned=cleaning_meta.get("cleaned_row_count", len(cleaned_df)),
+            total_products=cleaning_meta.get("unique_products", len(cleaned_df)),
+            date_min=None,
+            date_max=None,
+            total_days=0,
+            granularity="cross_sectional",
+            class_distribution={},
+            issues=issues_tab,
+            products=[],
+            dataset_type="tabular",
+            top_moving=cleaning_meta.get("top_moving"),
+            frequency_code="NONE",
+            row_grain=cleaning_meta.get("row_grain"),
+            total_columns=cleaning_meta.get("total_columns", len(cleaned_df.columns)),
+        )
+
     min_periods = (
         settings.MIN_SERIES_LENGTH_DAILY
         if granularity == "daily"
-        else settings.MIN_SERIES_LENGTH_WEEKLY
+        else (
+            settings.MIN_SERIES_LENGTH_WEEKLY
+            if granularity == "weekly"
+            else (6 if granularity in ("monthly", "quarterly") else 4)
+        )
     )
-    inactive_days = settings.INACTIVE_THRESHOLD_DAYS
+    inactive_days_map = {
+        "daily": settings.INACTIVE_THRESHOLD_DAYS,
+        "weekly": 90,
+        "monthly": 180,
+        "quarterly": 400,
+        "yearly": 800,
+    }
+    inactive_days = inactive_days_map.get(granularity, settings.INACTIVE_THRESHOLD_DAYS)
 
     # Overall dates
     min_date = cleaned_df["date"].min()
@@ -253,4 +334,7 @@ def generate_data_health_report(
         top_moving=cleaning_meta.get("top_moving"),
         total_stock_units=cleaning_meta.get("total_stock_units"),
         total_stock_value=cleaning_meta.get("total_stock_value"),
+        frequency_code=cleaning_meta.get("frequency_code"),
+        row_grain=cleaning_meta.get("row_grain"),
+        total_columns=cleaning_meta.get("total_columns"),
     )

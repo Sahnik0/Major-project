@@ -36,13 +36,13 @@ export function Sidebar({
 
   return (
     <aside className="w-64 bg-[#171717] border-r border-[#262626] flex flex-col h-screen shrink-0 select-none text-[#ececec]">
-      {/* App Header: Clean minimalist typography, no slop logo */}
+      {/* App Header: Clean minimalist typography */}
       <div className="p-3.5 border-b border-[#262626] flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 rounded-full border border-white/20 flex items-center justify-center text-[10px] font-mono text-white/80">
-            SA
+            DA
           </div>
-          <span className="text-xs font-semibold tracking-tight text-[#ececec]">Stock Advisor</span>
+          <span className="text-xs font-semibold tracking-tight text-[#ececec]">AI Data Analyst</span>
         </div>
 
         <button
@@ -59,9 +59,14 @@ export function Sidebar({
         <input
           ref={fileInputRef}
           type="file"
-          accept=".csv,.xlsx,.xls"
+          accept=".csv,.tsv,.txt,.xlsx,.xls,.json,.jsonl,.parquet"
           className="hidden"
-          onChange={(e) => e.target.files?.[0] && onDirectUpload?.(e.target.files[0])}
+          onChange={(e) => {
+            if (e.target.files?.[0]) {
+              onDirectUpload?.(e.target.files[0]);
+              e.target.value = "";
+            }
+          }}
         />
         <button
           onClick={() => {
@@ -75,9 +80,9 @@ export function Sidebar({
         >
           <span className="flex items-center gap-2">
             <Plus className="w-4 h-4 text-[#b4b4b4] group-hover:text-white" />
-            <span>Upload sales file</span>
+            <span>Upload dataset</span>
           </span>
-          <span className="text-[10px] text-[#8e8e8e] font-mono">CSV / XLSX</span>
+          <span className="text-[10px] text-[#8e8e8e] font-mono">CSV/XLSX/JSON</span>
         </button>
       </div>
 
@@ -111,11 +116,10 @@ export function Sidebar({
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (confirm(`Delete "${d.name}"?`)) onDeleteDataset(d.id);
-                    onDeleteDataset(d.id);
+                    if (confirm(`Delete "${d.name}"?`)) {
+                      onDeleteDataset(d.id);
+                    }
                   }}
-                  className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[#2f2f2f] text-[#8e8e8e] hover:text-rose-400 transition"
-                  title="Delete"
                   className={`p-1.5 rounded hover:bg-[#2f2f2f] text-[#8e8e8e] hover:text-rose-400 transition shrink-0 ${
                     isSelected
                       ? "opacity-70 hover:opacity-100"

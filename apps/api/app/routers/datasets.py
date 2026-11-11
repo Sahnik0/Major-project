@@ -2,11 +2,12 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi.responses import FileResponse
+from pydantic import BaseModel as PydanticBaseModel
 from sqlalchemy.orm import Session
 
 from apps.api.app.config import settings
-from apps.api.app.db import Dataset, Job, get_db
 from apps.api.app.db import ChatMessage, Dataset, Job, ProductForecast, get_db
 from apps.api.app.jobs.runner import enqueue_cleaning_and_profiling
 from apps.api.app.schemas.dataset import (
@@ -21,6 +22,7 @@ from apps.api.app.schemas.mapping import (
 )
 from apps.api.app.services.column_mapping import suggest_column_mapping_heuristics
 from apps.api.app.services.ingestion import (
+    SUPPORTED_EXTENSIONS,
     inspect_raw_file,
     read_raw_dataframe,
     save_upload_stream,
@@ -46,13 +48,13 @@ async def upload_dataset(
         )
 
     suffix = Path(file.filename).suffix.lower()
-    if suffix not in [".csv", ".xlsx", ".xls"]:
+    if suffix not in SUPPORTED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
             detail={
                 "code": "INVALID_FILE_TYPE",
-                "message": f"File type '{suffix}' is not supported. Please upload a .csv or .xlsx file.",
-                "hint": "Ensure your file is in standard CSV or Excel format.",
+                "message": f"File type '{suffix}' is not supported. Supported formats: {', '.join(sorted(SUPPORTED_EXTENSIONS))}.",
+                "hint": "Upload a CSV, TSV, TXT, Excel (.xlsx/.xls), JSON, JSONL, or Parquet file.",
             },
         )
 
@@ -188,29 +190,6 @@ def get_dataset(dataset_id: str, db: Session = Depends(get_db)) -> DatasetRespon
         updated_at=dataset.updated_at,
         error_message=dataset.error_message,
     )
-
-
-@router.delete("/{dataset_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_dataset(dataset_id: str, db: Session = Depends(get_db)) -> None:
-    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-    if not dataset:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "code": "DATASET_NOT_FOUND",
-                "message": f"Dataset '{dataset_id}' was not found.",
-                "hint": "Check the dataset ID.",
-            },
-        )
-
-    # Delete physical files
-    if dataset.file_path and Path(dataset.file_path).exists():
-        Path(dataset.file_path).unlink()
-    if dataset.parquet_path and Path(dataset.parquet_path).exists():
-        Path(dataset.parquet_path).unlink()
-
-    db.delete(dataset)
-    db.commit()
 
 
 @router.put("/{dataset_id}/mapping", response_model=MappingConfirmationResponse)
@@ -424,9 +403,119 @@ def delete_dataset(dataset_id: str, db: Session = Depends(get_db)):
                 p_p.unlink(missing_ok=True)
             except Exception:
                 pass
+    for exp_file in settings.EXPORT_DIR.glob(f"{dataset_id}_*"):
+        try:
+            exp_file.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     db.delete(dataset)
     db.commit()
     return {"status": "ok", "message": f"Dataset '{dataset_id}' deleted."}
+
+
+class CustomQueryExportRequest(PydanticBaseModel):
+    sql: Optional[str] = None
+    prompt: Optional[str] = None
+    export_csv: bool = False
+    filename_slug: Optional[str] = None
+
+
+@router.post("/{dataset_id}/query")
+def execute_custom_dataset_query(
+    dataset_id: str,
+    req: CustomQueryExportRequest,
+    db: Session = Depends(get_db),
+):
+    """Run a read-only DuckDB SQL query or natural-language CSV generation against any dataset."""
+    from apps.api.app.services.dataset_tools import (
+        execute_generate_csv_export,
+        execute_sql_query_tool,
+    )
+
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "DATASET_NOT_FOUND", "message": f"Dataset '{dataset_id}' not found."},
+        )
+
+    if req.export_csv or (req.prompt and not req.sql):
+        res = execute_generate_csv_export(
+            dataset=dataset,
+            db=db,
+            sql=req.sql,
+            filename_slug=req.filename_slug,
+            user_query=req.prompt or "",
+        )
+    elif req.sql:
+        res = execute_sql_query_tool(dataset=dataset, sql=req.sql, user_query=req.prompt or "")
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "MISSING_QUERY", "message": "Provide 'sql' or 'prompt'."},
+        )
+
+    if res.get("error"):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "QUERY_EXECUTION_ERROR", "message": res["error"]},
+        )
+    return res
+
+
+@router.get("/{dataset_id}/exports/{filename}")
+def download_generated_export(dataset_id: str, filename: str, db: Session = Depends(get_db)):
+    """Download a generated CSV or XLSX artifact produced by the AI analyst."""
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "DATASET_NOT_FOUND", "message": f"Dataset '{dataset_id}' not found."},
+        )
+
+    safe_name = Path(filename).name
+    if safe_name != filename or not safe_name.startswith(f"{dataset_id}_"):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_EXPORT_FILENAME", "message": "Invalid export file reference."},
+        )
+
+    target_path = (settings.EXPORT_DIR / safe_name).resolve()
+    if not str(target_path).startswith(str(settings.EXPORT_DIR.resolve())) or not target_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "EXPORT_NOT_FOUND", "message": f"Generated file '{safe_name}' was not found."},
+        )
+
+    # Strip dataset_id prefix for cleaner user-facing download name
+    clean_dl_name = safe_name[len(dataset_id) + 1 :] if safe_name.startswith(f"{dataset_id}_") else safe_name
+    media_type = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if safe_name.endswith(".xlsx")
+        else "text/csv"
+    )
+    return FileResponse(path=target_path, media_type=media_type, filename=clean_dl_name)
+
+
+@router.get("/{dataset_id}/raw.csv")
+def export_full_dataset_csv(dataset_id: str, db: Session = Depends(get_db)) -> Response:
+    """Export the full parsed dataset as a clean UTF-8 CSV."""
+    from apps.api.app.services.dataset_tools import get_dataset_dataframe
+
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "DATASET_NOT_FOUND", "message": f"Dataset '{dataset_id}' not found."},
+        )
+
+    df = get_dataset_dataframe(dataset)
+    csv_bytes = df.write_csv().encode("utf-8")
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{dataset.name}_cleaned.csv"'},
+    )
 
 

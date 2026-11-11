@@ -25,6 +25,7 @@ export default function Home() {
 
   // Active Job Polling
   const [activeJob, setActiveJob] = useState<{ id: string; status: string; progress: number; step: string } | null>(null);
+  const [chatRefreshKey, setChatRefreshKey] = useState<number>(0);
 
   // Initial load
   useEffect(() => {
@@ -76,27 +77,39 @@ export default function Home() {
           step: j.current_step || "",
         });
         if (j.status === "completed") {
-          loadDatasets();
+          const updated = await api.getDatasets();
+          setDatasets(updated.datasets);
+          setChatRefreshKey((k) => k + 1);
+
           if (j.job_type === "cleaning_profiling" && j.dataset_id) {
-            api.startForecastJob(j.dataset_id, {
-              horizon: 28,
-              num_folds: 2,
-              service_level: 0.90,
-              lead_time_days: 7,
-              review_period_days: 7,
-            }).then((fJob) => {
-              setActiveJob({
-                id: fJob.job_id,
-                status: "processing",
-                progress: 10,
-                step: "Forecasting demand and computing reorder points...",
-              });
-            }).catch(console.error);
+            const targetDs = updated.datasets.find((d) => d.id === j.dataset_id);
+            const dsType = targetDs?.column_mapping?._dataset_type;
+            if (dsType !== "tabular") {
+              try {
+                const fJob = await api.startForecastJob(j.dataset_id, {
+                  horizon: 28,
+                  num_folds: 2,
+                  service_level: 0.90,
+                  lead_time_days: 7,
+                  review_period_days: 7,
+                  include_timesfm: true,
+                });
+                setActiveJob({
+                  id: fJob.job_id,
+                  status: "processing",
+                  progress: 10,
+                  step: "Dataset ready! Running background forecasting & reorder math...",
+                });
+                return;
+              } catch (fcErr) {
+                console.error(fcErr);
+              }
+            }
           }
-          await loadDatasets();
           setActiveJob(null);
         } else if (j.status === "failed") {
           await loadDatasets();
+          setChatRefreshKey((k) => k + 1);
           setActiveJob(null);
         }
       } catch (err) {
@@ -175,6 +188,7 @@ export default function Home() {
 
         <ChatInterface
           dataset={currentDataset}
+          refreshTrigger={chatRefreshKey}
           onOpenUpload={() => setIsUploadOpen(true)}
           onDirectUpload={handleDirectFileUpload}
           onInspectProduct={handleInspectProduct}

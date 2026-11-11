@@ -139,7 +139,7 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".csv,.xlsx,.xls"
+                accept=".csv,.tsv,.txt,.xlsx,.xls,.json,.jsonl,.parquet"
                 className="hidden"
                 onChange={(e) => e.target.files?.[0] && handleFileSelected(e.target.files[0])}
               />
@@ -148,9 +148,9 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
               </div>
               <div>
                 <h3 className="text-sm font-medium text-[#ececec]">
-                  {uploading ? "Analyzing file & sniffing headers..." : "Click or drag sales file here"}
+                  {uploading ? "Analyzing file & profiling columns..." : "Click or drag any business data file here"}
                 </h3>
-                <p className="text-xs text-[#8e8e8e] mt-1">Supports standard .csv and .xlsx spreadsheets</p>
+                <p className="text-xs text-[#8e8e8e] mt-1">Supports CSV, TSV, Excel (.xlsx/.xls), JSON, JSONL, and Parquet</p>
               </div>
             </div>
           ) : (
@@ -206,6 +206,8 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
                     className="w-full bg-[#262626] border border-[#383838] rounded-lg px-2.5 py-1.5 text-xs text-[#ececec] focus:outline-none focus:border-[#555555]"
                   >
                     <option value="">-- Select column --</option>
+                    <option value="__tabular__">(No Date — Cross-Sectional Table)</option>
+                    <option value="__period__">(Period Stock Summary)</option>
                     {uploadData.detected_columns.map((c) => (
                       <option key={c} value={c}>
                         {c}
@@ -225,6 +227,7 @@ export function UploadModal({ isOpen, onClose, onSuccess }: UploadModalProps) {
                     className="w-full bg-[#262626] border border-[#383838] rounded-lg px-2.5 py-1.5 text-xs text-[#ececec] focus:outline-none focus:border-[#555555]"
                   >
                     <option value="">-- Select column --</option>
+                    <option value="__overall__">(Overall Single Series)</option>
                     {uploadData.detected_columns.map((c) => (
                       <option key={c} value={c}>
                         {c}

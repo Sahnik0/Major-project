@@ -59,11 +59,19 @@ def run_forecast_job_sync(
 
         # Determine dynamic frequency and horizon from health report
         freq_code = health_rep.get("frequency_code", "D")
-        if not freq_code:
+        if not freq_code or freq_code == "NONE":
             gran = health_rep.get("granularity", "daily")
-            freq_code = "W" if gran == "weekly" else ("M" if gran == "monthly" else "D")
+            if gran == "cross_sectional" or "date" not in df.columns or "product" not in df.columns:
+                dataset.status = "ready"
+                job.status = "completed"
+                job.progress = 100
+                job.current_step = "Cross-sectional dataset ready (no time axis for forecasting)"
+                db.commit()
+                return
+            freq_map_rev = {"weekly": "W", "monthly": "M", "quarterly": "Q", "yearly": "Y"}
+            freq_code = freq_map_rev.get(gran, "D")
 
-        default_horizons = {"D": 28, "W": 8, "M": 3}
+        default_horizons = {"D": 28, "W": 8, "M": 6, "Q": 4, "Y": 3}
         effective_horizon = req.horizon if req.horizon != 28 else default_horizons.get(freq_code, 28)
 
         # Speed optimization for large product catalogs (>25 items)
@@ -197,7 +205,7 @@ def run_forecast_job_sync(
             from apps.api.app.services.chat_advisor import get_or_create_initial_messages
             if dataset:
                 get_or_create_initial_messages(dataset, db)
-        except Exception as e_msg:
+        except Exception:
             pass
 
     except Exception as e:

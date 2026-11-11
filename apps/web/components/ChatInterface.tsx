@@ -20,7 +20,18 @@ import {
   Terminal,
   RotateCcw,
 } from "lucide-react";
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from "recharts";
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  ComposedChart,
+  Line,
+  Area,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip,
+} from "recharts";
 import { api, DatasetItem } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 
@@ -35,6 +46,7 @@ interface ChatMessage {
 
 interface ChatInterfaceProps {
   dataset: DatasetItem | null;
+  refreshTrigger?: number;
   onOpenUpload: () => void;
   onDirectUpload: (file: File) => void;
   onInspectProduct: (productName: string) => void;
@@ -43,6 +55,7 @@ interface ChatInterfaceProps {
 
 export function ChatInterface({
   dataset,
+  refreshTrigger = 0,
   onOpenUpload,
   onDirectUpload,
   onInspectProduct,
@@ -52,18 +65,20 @@ export function ChatInterface({
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [showAllColumns, setShowAllColumns] = useState(false);
+  const [expandedThoughts, setExpandedThoughts] = useState<Record<string, boolean>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const zeroFileInputRef = useRef<HTMLInputElement>(null);
   const chatFileInputRef = useRef<HTMLInputElement>(null);
+  const textInputRef = useRef<HTMLInputElement>(null);
 
-  // Load conversation when dataset changes
+  // Load conversation when dataset changes or background job finishes
   useEffect(() => {
     if (!dataset) {
       setMessages([]);
       return;
     }
     loadMessages(dataset.id);
-  }, [dataset?.id]);
+  }, [dataset?.id, refreshTrigger]);
 
   const loadMessages = async (datasetId: string) => {
     try {
@@ -134,10 +149,10 @@ export function ChatInterface({
       <div className="flex-1 flex flex-col items-center justify-center p-6 max-w-xl mx-auto w-full text-center space-y-6 bg-[#212121]">
         <div className="space-y-2.5">
           <h1 className="text-2xl font-medium text-[#ececec] tracking-tight">
-            What should I stock, and how much?
+            Upload any business dataset & ask anything
           </h1>
           <p className="text-xs text-[#b4b4b4] leading-relaxed max-w-md mx-auto">
-            Upload your sales history. We clean your data, test TimesFM against simple baselines honestly, and turn forecasts into exact reorder quantities — 100% on your machine.
+            Upload CSV, TSV, Excel, JSON, or Parquet data. Our local AI analyst immediately understands every row & column, runs SQL/statistical queries, predicts future trends, and generates custom CSV exports — 100% offline.
           </p>
         </div>
 
@@ -156,7 +171,7 @@ export function ChatInterface({
           <input
             ref={zeroFileInputRef}
             type="file"
-            accept=".csv,.xlsx,.xls"
+            accept=".csv,.tsv,.txt,.xlsx,.xls,.json,.jsonl,.parquet"
             className="hidden"
             onChange={(e) => e.target.files?.[0] && onDirectUpload(e.target.files[0])}
           />
@@ -164,10 +179,9 @@ export function ChatInterface({
             <FileSpreadsheet className="w-5 h-5 text-[#ececec]" />
           </div>
           <div className="text-xs">
-            <span className="font-medium text-[#ececec]">Click to select or drop your sales CSV / Excel</span>
+            <span className="font-medium text-[#ececec]">Click to select or drop CSV, Excel, TSV, JSON, or Parquet</span>
             <p className="text-[11px] text-[#8e8e8e] mt-0.5">
-              Requires columns: Date, Product SKU, Units Sold
-              AI automatically understands your columns, runs TimesFM & baselines, and generates recommendations
+              Zero manual setup — AI profiles all rows & columns immediately, unlocks SQL queries, future predictions, and custom CSV generation
             </p>
           </div>
         </div>
@@ -195,27 +209,55 @@ export function ChatInterface({
         <div className="flex items-center gap-2.5">
           <span className="text-xs font-medium text-[#ececec]">{dataset.name}</span>
           <span className="text-[10px] text-[#8e8e8e] font-mono">
-            {dataset.product_count} items • {dataset.row_count?.toLocaleString()} rows
+            {dataset.product_count ?? "—"} entities • {dataset.row_count?.toLocaleString() ?? 0} rows
           </span>
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              setInput("Generate a CSV containing ");
+              textInputRef.current?.focus();
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs font-medium transition"
+            title="Ask AI to generate a custom filtered or summarized CSV"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Generate CSV</span>
+          </button>
+          <a
+            href={api.getRawCsvUrl(dataset.id)}
+            download
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2a2a2a] hover:bg-[#333333] border border-[#383838] text-[#ececec] text-xs font-medium transition"
+            title="Download full parsed dataset as CSV"
+          >
+            <Download className="w-3.5 h-3.5 text-[#b4b4b4]" />
+            <span>Full CSV</span>
+          </a>
+          {Boolean(
+            dataset.column_mapping?.stock_on_hand ||
+            dataset.column_mapping?._dataset_type === "stock_summary" ||
+            Object.keys(dataset.column_mapping?._column_semantics || {}).some((k) =>
+              /sku|units_sold|sale_qty|closing_qty|stock|inventory/i.test(k)
+            )
+          ) && (
+            <a
+              href={api.getInventoryCsvUrl(dataset.id)}
+              download
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2a2a2a] hover:bg-[#333333] border border-[#383838] text-[#b4b4b4] hover:text-[#ececec] text-xs font-medium transition"
+            >
+              <Download className="w-3.5 h-3.5 text-[#8e8e8e]" />
+              <span>Reorder PO</span>
+            </a>
+          )}
           <button
             onClick={handleResetChat}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2a2a2a] hover:bg-[#333333] border border-[#383838] text-[#8e8e8e] hover:text-rose-400 text-xs font-medium transition"
             title="Clear conversation history"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>Clear Chat</span>
+            <span>Clear</span>
           </button>
-          <a
-            href={api.getInventoryCsvUrl(dataset.id)}
-            download
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2a2a2a] hover:bg-[#333333] border border-[#383838] text-[#ececec] text-xs font-medium transition"
-          >
-            <Download className="w-3.5 h-3.5 text-[#b4b4b4]" />
-            <span>Export CSV</span>
-          </a>
           <button
             onClick={onViewAllProducts}
             className="px-3 py-1.5 rounded-lg bg-[#2a2a2a] hover:bg-[#333333] border border-[#383838] text-[#b4b4b4] hover:text-[#ececec] text-xs font-medium transition"
@@ -240,12 +282,70 @@ export function ChatInterface({
                     : "w-full text-xs leading-relaxed space-y-3 text-[#ececec]"
                 }`}
               >
-                {/* Assistant Message Header (Minimal monochrome) */}
+                {/* Assistant Message Header */}
                 {m.role === "assistant" && (
                   <div className="flex items-center gap-2 text-[11px] text-[#8e8e8e] mb-1">
-                    <span className="font-semibold text-[#ececec]">Stock Advisor</span>
+                    <span className="font-semibold text-[#ececec]">AI Data Analyst</span>
                   </div>
                 )}
+
+                {/* Collapsible Chain-of-Thought Reasoning Trace */}
+                {m.role === "assistant" &&
+                  Array.isArray(m.payload?.reasoning_steps) &&
+                  m.payload.reasoning_steps.length > 0 && (
+                    <div className="rounded-xl bg-[#1c1c1c] border border-[#2f2f2f] overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedThoughts((prev) => ({
+                            ...prev,
+                            [m.id]: !prev[m.id],
+                          }))
+                        }
+                        className="w-full px-3 py-2 flex items-center justify-between text-[11px] text-[#a8a8a8] hover:text-[#ececec] hover:bg-[#242424] transition"
+                      >
+                        <span className="flex items-center gap-2 font-medium">
+                          <Terminal className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <span>
+                            Thought through {m.payload.reasoning_steps.length} analytical step
+                            {m.payload.reasoning_steps.length > 1 ? "s" : ""}
+                          </span>
+                          {typeof m.payload.execution_ms === "number" && (
+                            <span className="text-[10px] font-mono text-[#7a7a7a]">
+                              • {m.payload.execution_ms}ms
+                            </span>
+                          )}
+                        </span>
+                        {expandedThoughts[m.id] ? (
+                          <ChevronUp className="w-3.5 h-3.5 text-[#8e8e8e]" />
+                        ) : (
+                          <ChevronDown className="w-3.5 h-3.5 text-[#8e8e8e]" />
+                        )}
+                      </button>
+
+                      {expandedThoughts[m.id] && (
+                        <div className="px-3.5 pb-3 pt-1.5 border-t border-[#2a2a2a] space-y-2 text-[11px]">
+                          {m.payload.reasoning_steps.map(
+                            (st: { phase?: string; thought?: string }, sIdx: number) => (
+                              <div key={sIdx} className="flex items-start gap-2.5 leading-snug">
+                                <span className="mt-0.5 w-4 h-4 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 font-mono text-[9px] flex items-center justify-center shrink-0">
+                                  {sIdx + 1}
+                                </span>
+                                <div className="flex-1 min-w-0">
+                                  <span className="font-mono text-[10px] text-emerald-400 font-semibold block">
+                                    {st.phase || `Step ${sIdx + 1}`}
+                                  </span>
+                                  <span className="text-[#b0b0b0] text-[11px] break-words block mt-0.5">
+                                    {st.thought}
+                                  </span>
+                                </div>
+                              </div>
+                            )
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                 {/* Markdown Body */}
                 <div className="text-[#ececec] leading-relaxed text-xs">
@@ -529,7 +629,7 @@ export function ChatInterface({
 
                     <div className="pt-1">
                       <a
-                        href={m.payload.csv_url}
+                        href={api.resolveUrl(m.payload.csv_url)}
                         download
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white text-black hover:bg-neutral-200 text-xs font-medium transition"
                       >
@@ -590,7 +690,178 @@ export function ChatInterface({
                   </div>
                 )}
 
-                {/* AI Agent Tool Result Card (Deterministic Tool Execution) */}
+                {/* Future Forecast Result Card */}
+                {m.card_type === "forecast_result" && m.payload && (
+                  <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-3 mt-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] font-mono font-medium">
+                          <TrendingUp className="w-3 h-3 text-emerald-400" />
+                          {m.payload.model_used || "Forecast"}
+                        </span>
+                        <span className="font-medium text-[#ececec] text-xs">{m.payload.title}</span>
+                      </div>
+                      <span className="text-[10px] text-[#8e8e8e] font-mono">80% CI Band</span>
+                    </div>
+
+                    {m.payload.forecast_chart && m.payload.forecast_chart.length > 0 && (
+                      <div className="h-52 w-full pt-1">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <ComposedChart
+                            data={m.payload.forecast_chart}
+                            margin={{ top: 8, right: 12, left: 0, bottom: 0 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" stroke="#2f2f2f" />
+                            <XAxis
+                              dataKey="date"
+                              tick={{ fill: "#8e8e8e", fontSize: 9 }}
+                              tickFormatter={(v: string) => (v && v.length >= 10 ? v.slice(2, 10) : v)}
+                            />
+                            <YAxis tick={{ fill: "#8e8e8e", fontSize: 9 }} width={55} />
+                            <Tooltip
+                              contentStyle={{ backgroundColor: "#1a1a1a", borderColor: "#383838", fontSize: "11px", borderRadius: "8px" }}
+                              formatter={(val: any, name: any) => [
+                                typeof val === "number" ? val.toLocaleString() : val,
+                                name,
+                              ]}
+                            />
+                            <Area type="monotone" dataKey="upper" name="Upper 90%" stroke="none" fill="#10b981" fillOpacity={0.14} />
+                            <Area type="monotone" dataKey="lower" name="Lower 10%" stroke="none" fill="#262626" fillOpacity={1} />
+                            <Line type="monotone" dataKey="history" name="Historical" stroke="#9ca3af" strokeWidth={1.75} dot={false} />
+                            <Line type="monotone" dataKey="forecast" name="Predicted" stroke="#10b981" strokeWidth={2.25} dot={{ r: 2 }} />
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+
+                    {m.payload.table_rows && m.payload.table_rows.length > 0 && (
+                      <div className="overflow-x-auto rounded-lg border border-[#2e2e2e] max-h-56">
+                        <table className="w-full text-[11px] text-left">
+                          {m.payload.table_headers && (
+                            <thead className="bg-[#1f1f1f] text-[#8e8e8e] border-b border-[#2e2e2e] sticky top-0">
+                              <tr>
+                                {m.payload.table_headers.map((h: string, idx: number) => (
+                                  <th key={idx} className="px-3 py-1.5 font-medium">{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                          )}
+                          <tbody className="divide-y divide-[#2a2a2a] bg-[#212121]">
+                            {m.payload.table_rows.map((row: string[], rIdx: number) => (
+                              <tr key={rIdx} className="hover:bg-[#262626] transition">
+                                {row.map((cell: string, cIdx: number) => (
+                                  <td key={cIdx} className={`px-3 py-1.5 ${cIdx === 0 ? "text-[#ececec] font-medium" : "text-[#b4b4b4] font-mono"}`}>
+                                    {cell}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {m.payload.csv_url && (
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <a
+                          href={api.resolveUrl(m.payload.csv_url)}
+                          download
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white text-black hover:bg-neutral-200 text-xs font-medium transition"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Download Forecast CSV</span>
+                        </a>
+                        {m.payload.xlsx_url && (
+                          <a
+                            href={api.resolveUrl(m.payload.xlsx_url)}
+                            download
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2f2f2f] hover:bg-[#383838] border border-[#444444] text-[#ececec] text-xs font-medium transition"
+                          >
+                            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>Download Excel (.xlsx)</span>
+                          </a>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Generated Custom CSV / Excel Artifact Card */}
+                {m.card_type === "csv_export" && m.payload && (
+                  <div className="p-3.5 rounded-xl bg-[#262626] border border-emerald-500/30 space-y-3 mt-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-mono font-medium">
+                          <FileSpreadsheet className="w-3 h-3 text-emerald-400" />
+                          Generated Export
+                        </span>
+                        <span className="font-medium text-[#ececec] text-xs">{m.payload.title}</span>
+                      </div>
+                      <span className="text-[10px] text-[#8e8e8e] font-mono">
+                        {m.payload.row_count?.toLocaleString() ?? ""} rows
+                      </span>
+                    </div>
+
+                    {m.payload.sql_query && (
+                      <div className="p-2 rounded-lg bg-[#1b1b1b] border border-[#2e2e2e] font-mono text-[10px] text-[#a3a3a3] overflow-x-auto">
+                        <span className="text-emerald-400 mr-1.5">SQL:</span>
+                        {m.payload.sql_query}
+                      </div>
+                    )}
+
+                    {m.payload.table_rows && m.payload.table_rows.length > 0 && (
+                      <div className="overflow-x-auto rounded-lg border border-[#2e2e2e] max-h-52">
+                        <table className="w-full text-[11px] text-left">
+                          {m.payload.table_headers && (
+                            <thead className="bg-[#1f1f1f] text-[#8e8e8e] border-b border-[#2e2e2e]">
+                              <tr>
+                                {m.payload.table_headers.map((h: string, idx: number) => (
+                                  <th key={idx} className="px-3 py-1.5 font-medium whitespace-nowrap">{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                          )}
+                          <tbody className="divide-y divide-[#2a2a2a] bg-[#212121]">
+                            {m.payload.table_rows.map((row: string[], rIdx: number) => (
+                              <tr key={rIdx} className="hover:bg-[#262626] transition">
+                                {row.map((cell: string, cIdx: number) => (
+                                  <td key={cIdx} className={`px-3 py-1.5 whitespace-nowrap ${cIdx === 0 ? "text-[#ececec] font-medium" : "text-[#b4b4b4] font-mono"}`}>
+                                    {cell}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      {m.payload.csv_url && (
+                        <a
+                          href={api.resolveUrl(m.payload.csv_url)}
+                          download
+                          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-white text-black hover:bg-neutral-200 text-xs font-semibold transition"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Download CSV ({m.payload.filename || "export.csv"})</span>
+                        </a>
+                      )}
+                      {m.payload.xlsx_url && (
+                        <a
+                          href={api.resolveUrl(m.payload.xlsx_url)}
+                          download
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2f2f2f] hover:bg-[#383838] border border-[#444444] text-[#ececec] text-xs font-medium transition"
+                        >
+                          <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Download Excel (.xlsx)</span>
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* AI Agent Tool Result Card (DuckDB SQL & Polars Execution) */}
                 {m.card_type === "tool_result" && m.payload && (
                   <div className="p-3.5 rounded-xl bg-[#262626] border border-[#333333] space-y-3 mt-2">
                     <div className="flex items-center justify-between">
@@ -604,9 +875,16 @@ export function ChatInterface({
                         </span>
                       </div>
                       <span className="text-[10px] text-[#8e8e8e] font-mono">
-                        Polars Engine
+                        {m.payload.sql_query ? "DuckDB SQL" : "Polars Engine"}
                       </span>
                     </div>
+
+                    {m.payload.sql_query && (
+                      <div className="p-2 rounded-lg bg-[#1b1b1b] border border-[#2e2e2e] font-mono text-[10px] text-[#a3a3a3] overflow-x-auto">
+                        <span className="text-emerald-400 mr-1.5">SQL:</span>
+                        {m.payload.sql_query}
+                      </div>
+                    )}
 
                     {/* Chart preview if available */}
                     {m.payload.chart_data && m.payload.chart_data.length > 0 && (
@@ -706,8 +984,8 @@ export function ChatInterface({
 
           {isSending && (
             <div className="flex items-center gap-2 text-xs text-[#8e8e8e] py-1">
-              <span className="w-2 h-2 rounded-full bg-[#8e8e8e] animate-pulse"></span>
-              <span>Checking facts and formulating answer...</span>
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span>Reasoning step-by-step across schema, executing SQL/models, and verifying facts...</span>
             </div>
           )}
 
@@ -718,16 +996,18 @@ export function ChatInterface({
       {/* Suggestion Chips & Bottom Chat Input (ChatGPT Style) */}
       <div className="p-4 bg-[#212121] shrink-0">
         <div className="max-w-2xl mx-auto space-y-3">
-          {/* Suggestion Chips */}
+          {/* Dynamic Dataset-Specific Suggestion Chips */}
           <div className="flex items-center gap-2 overflow-x-auto pb-1 text-[11px]">
-            {[
-              "Top 5 brands by profit",
-              "Compare SXI and ARYN brands",
-              "Total profit by department",
-              "What should I reorder this week?",
-              "Summary statistics for Net Sale Qty",
-              "What do the columns in my file represent?",
-            ].map((chip) => (
+            {(
+              dataset.column_mapping?._suggested_questions ||
+              messages.find((m) => m.card_type === "health_summary")?.payload?.suggested_questions || [
+                "Show me the future prediction",
+                "Explain all rows and columns in this dataset",
+                "Find correlations across numeric columns",
+                "Detect anomalies and extreme outliers",
+                "Generate a CSV summary of top records",
+              ]
+            ).map((chip: string) => (
               <button
                 key={chip}
                 onClick={() => handleSend(chip)}
@@ -750,24 +1030,30 @@ export function ChatInterface({
             <input
               ref={chatFileInputRef}
               type="file"
-              accept=".csv,.xlsx,.xls"
+              accept=".csv,.tsv,.txt,.xlsx,.xls,.json,.jsonl,.parquet"
               className="hidden"
-              onChange={(e) => e.target.files?.[0] && onDirectUpload(e.target.files[0])}
+              onChange={(e) => {
+                if (e.target.files?.[0]) {
+                  onDirectUpload(e.target.files[0]);
+                  e.target.value = "";
+                }
+              }}
             />
             <button
               type="button"
               onClick={() => chatFileInputRef.current?.click()}
               className="p-1.5 rounded-full text-[#8e8e8e] hover:text-[#ececec] hover:bg-[#383838] transition"
-              title="Upload sales spreadsheet"
+              title="Upload any dataset (CSV, TSV, Excel, JSON, Parquet)"
             >
               <Paperclip className="w-4 h-4" />
             </button>
 
             <input
+              ref={textInputRef}
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask anything about your stock, forecasts, or reorder needs..."
+              placeholder="Ask any question, request future predictions, or tell me to generate a custom CSV..."
               className="flex-1 bg-transparent px-2 text-xs text-[#ececec] placeholder:text-[#8e8e8e] focus:outline-none"
               disabled={isSending}
             />

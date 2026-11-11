@@ -1,6 +1,7 @@
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import polars as pl
 
 LOGICAL_FIELDS = {
@@ -8,33 +9,53 @@ LOGICAL_FIELDS = {
         "required": True,
         "keywords": [
             "date",
+            "saledate",
+            "sale_date",
             "order_date",
             "sales_date",
             "invoice_date",
             "trans_date",
             "transaction_date",
-            "time",
+            "ship_date",
+            "posting_date",
+            "created_at",
+            "updated_at",
+            "period",
+            "month",
+            "quarter",
+            "year_month",
             "timestamp",
+            "datetime",
+            "time",
             "day",
             "dt",
         ],
         "avoid": [
             "closing", "opening", "inward", "outward", "qty", "quantity",
-            "value", "sale", "rate", "brand", "vendor", "size", "mrp", "cost", "disc"
+            "brand", "vendor", "size", "mrp", "cost", "disc", "lead_time", "days_of"
         ],
     },
     "product": {
         "required": True,
         "keywords": [
-            "brand",
-            "department",
-            "product",
-            "sku",
-            "item",
-            "item_code",
             "product_sku",
             "product_id",
             "product_name",
+            "product",
+            "sku",
+            "item_code",
+            "item_name",
+            "item",
+            "brand",
+            "department",
+            "category",
+            "type",
+            "segment",
+            "symbol",
+            "ticker",
+            "series",
+            "entity",
+            "region",
             "description",
             "style",
             "article",
@@ -42,7 +63,7 @@ LOGICAL_FIELDS = {
             "material",
         ],
         "avoid": [
-            "qty", "quantity", "value", "rate", "amount", "price", "sale",
+            "qty", "quantity", "value", "rate", "amount", "price",
             "profit", "closing", "opening", "inward", "outward", "disc", "date", "time"
         ],
     },
@@ -61,9 +82,19 @@ LOGICAL_FIELDS = {
             "sold_qty",
             "amount_sold",
             "net_qty",
+            "demand",
+            "sales",
+            "target",
+            "value",
+            "ma",
+            "close",
+            "price",
+            "total",
+            "count",
         ],
         "avoid": [
-            "inward", "outward", "closing", "opening", "value", "rate", "price", "profit", "disc", "amount"
+            "inward", "outward", "closing", "opening", "disc",
+            "date", "time", "id", "code", "flag", "promo"
         ],
     },
     "revenue": {
@@ -330,32 +361,134 @@ COLUMN_SEMANTICS_DICTIONARY = {
     "stock_turn":          "Inventory turnover — how many times stock is sold and replaced per year",
     "turnover_rate":       "Inventory turnover rate — times stock turns over in a period",
     "conversion":          "Sales conversion rate — transactions converted from footfall or visits",
+
+    # ── Temporal & General Business / Analytics ────────────────────────────
+    "saledate":            "Date of sale or reporting period timestamp",
+    "sale_date":           "Date of sale or transaction",
+    "order_date":          "Date when the customer order was placed",
+    "invoice_date":        "Billing or invoice issue date",
+    "transaction_date":    "Date when the transaction occurred",
+    "date":                "Calendar date or reporting period timestamp",
+    "timestamp":           "Exact date and time of the event or record",
+    "period":              "Reporting time period (month, quarter, or fiscal cycle)",
+    "quarter":             "Calendar or fiscal quarter",
+    "year":                "Calendar or fiscal year",
+    "month":               "Calendar month",
+    "ma":                  "Moving average or smoothed metric value across periods",
+    "moving_average":      "Moving average metric smoothing short-term fluctuations",
+    "bedrooms":            "Number of bedrooms (categorical/integer property attribute)",
+    "bathrooms":           "Number of bathrooms",
+    "property_type":       "Property classification (e.g. house, unit, apartment)",
+    "customer_id":         "Unique identifier for each customer",
+    "customer":            "Customer name or segment",
+    "region":              "Geographic region, territory, or market area",
+    "country":             "Country name or ISO country code",
+    "state":               "State or province",
+    "city":                "City or municipality",
+    "channel":             "Sales or marketing channel (e.g. Online, Retail, Wholesale)",
+    "store_id":            "Store or branch identifier",
+    "store":               "Store, outlet, or location identifier",
+    "promo_flag":          "Promotional indicator (1 = on promotion, 0 = regular)",
+    "status":              "Current lifecycle or operational status of the record",
+    "salary":              "Compensation or salary amount",
+    "age":                 "Age metric or tenure value",
+    "score":               "Numeric rating, index, or evaluation score",
+    "rating":              "Customer or quality rating score",
 }
 
 
-def explain_columns(columns: List[str]) -> Dict[str, str]:
-    """Generates human-readable plain English definitions for every column in the dataset.
-    Tries to find the most specific (longest) matching key from COLUMN_SEMANTICS_DICTIONARY."""
-    # Sort dictionary keys by length descending so the most specific key wins
+def _match_semantic_dictionary(col: str) -> Optional[str]:
+    """Matches a column name against COLUMN_SEMANTICS_DICTIONARY using strict token boundaries
+    (preventing short tokens like 'MA' from matching inside 'main_category')."""
+    norm = re.sub(r"[^a-z0-9]+", "_", col.strip().lower()).strip("_")
+    if not norm:
+        return None
+
+    if norm in COLUMN_SEMANTICS_DICTIONARY:
+        return COLUMN_SEMANTICS_DICTIONARY[norm]
+
+    norm_tokens = [t for t in norm.split("_") if t]
     sorted_keys = sorted(COLUMN_SEMANTICS_DICTIONARY.keys(), key=len, reverse=True)
-    # Percentage/ratio keys tried first when the column name contains '%' or ends with 'pct'
+    is_pct_col = "%" in col or norm.endswith(("_pct", "_percent", "_rate", "_ratio", "pct"))
     pct_priority_keys = [k for k in sorted_keys if k.endswith(("_pct", "_percent", "_ratio"))]
+    candidate_keys = (pct_priority_keys + sorted_keys) if is_pct_col else sorted_keys
+
+    for k in candidate_keys:
+        k_tokens = [t for t in k.split("_") if t]
+        # Contiguous token sequence match (e.g. ['profit', 'amt'] in ['profit', 'amt', 'in', 'rate'])
+        if len(k_tokens) <= len(norm_tokens):
+            for start in range(len(norm_tokens) - len(k_tokens) + 1):
+                if norm_tokens[start : start + len(k_tokens)] == k_tokens:
+                    return COLUMN_SEMANTICS_DICTIONARY[k]
+        # Multi-token subset match when key has >=2 meaningful tokens (e.g. sale + qty in sale_adj_qty)
+        if len(k_tokens) >= 2 and all(t in norm_tokens for t in k_tokens):
+            return COLUMN_SEMANTICS_DICTIONARY[k]
+
+    return None
+
+
+def explain_columns(columns: List[str], df: Optional[pl.DataFrame] = None) -> Dict[str, str]:
+    """Generates accurate, data-grounded plain-English definitions for every column in the dataset."""
     explanations: Dict[str, str] = {}
+    profiles = build_column_profiles(df) if df is not None and len(df) > 0 else {}
+
     for c in columns:
-        norm = re.sub(r"[^a-z0-9]+", "_", c.strip().lower()).strip("_")
-        matched = None
-        # If column looks like a percentage/ratio column, try pct-specific keys first
-        is_pct_col = "%" in c or norm.endswith(("_pct", "_percent", "_rate", "_ratio", "pct"))
-        candidate_keys = (pct_priority_keys + sorted_keys) if is_pct_col else sorted_keys
-        for k in candidate_keys:
-            if k in norm or norm in k:
-                matched = COLUMN_SEMANTICS_DICTIONARY[k]
-                break
-        if not matched:
-            matched = f"Column containing {c.replace('_', ' ')} records"
-        explanations[c] = matched
+        base_desc = _match_semantic_dictionary(c)
+        prof = profiles.get(c)
+
+        if prof:
+            role = prof.get("role")
+            if role == "temporal":
+                span = f"{prof.get('date_min')} to {prof.get('date_max')}" if prof.get("date_min") else "dates"
+                freq = prof.get("frequency") or "temporal"
+                stats_suffix = f" ({freq}, {span}, {prof.get('unique_count', 0):,} unique dates)"
+                explanations[c] = (base_desc + stats_suffix) if base_desc else f"Date/time column{stats_suffix}"
+            elif role in ("numeric_measure", "numeric_attribute"):
+                min_v = prof.get("min")
+                max_v = prof.get("max")
+                mean_v = prof.get("mean")
+                rng = (
+                    f"range {min_v:,.2f} to {max_v:,.2f}, avg {mean_v:,.2f}"
+                    if isinstance(min_v, (int, float)) and isinstance(max_v, (int, float))
+                    else "numeric values"
+                )
+                if base_desc:
+                    explanations[c] = f"{base_desc} ({rng})"
+                elif role == "numeric_attribute":
+                    explanations[c] = f"Discrete numeric attribute ({prof.get('unique_count', 0)} distinct values, {rng})"
+                else:
+                    explanations[c] = f"Numeric business metric ({rng})"
+            elif role in ("categorical", "identifier", "boolean", "text"):
+                u_cnt = prof.get("unique_count", 0)
+                top_vals = [str(v["value"]) for v in (prof.get("top_values") or [])[:4]]
+                examples = f" — e.g. {', '.join(top_vals)}" if top_vals else ""
+                if base_desc:
+                    explanations[c] = f"{base_desc} ({u_cnt:,} unique values{examples})"
+                elif role == "identifier":
+                    explanations[c] = f"Unique/high-cardinality identifier column ({u_cnt:,} unique values{examples})"
+                else:
+                    explanations[c] = f"Categorical / text dimension ({u_cnt:,} unique values{examples})"
+            else:
+                explanations[c] = base_desc or f"Business data column '{c}'"
+        else:
+            explanations[c] = base_desc or f"Business attribute or metric '{c.replace('_', ' ')}'"
+
     return explanations
 
+
+
+NUMERIC_DTYPES = (
+    pl.Int8,
+    pl.Int16,
+    pl.Int32,
+    pl.Int64,
+    pl.UInt8,
+    pl.UInt16,
+    pl.UInt32,
+    pl.UInt64,
+    pl.Float32,
+    pl.Float64,
+)
 
 
 def _normalize_name(name: str) -> str:
@@ -368,9 +501,17 @@ def check_date_parse_rate(df: pl.DataFrame, col: str, max_samples: int = 100) ->
     if len(sample_series) == 0:
         return 0.0
 
-    # If already Date or Datetime dtype
     if sample_series.dtype in (pl.Date, pl.Datetime):
         return 1.0
+
+    # Numeric columns should only be treated as dates if column name strongly suggests a date/timestamp
+    norm = _normalize_name(col)
+    date_name_hint = any(
+        tok in norm.split("_") or tok in norm
+        for tok in ("date", "dt", "timestamp", "datetime", "saledate", "time")
+    )
+    if sample_series.dtype in NUMERIC_DTYPES and not date_name_hint:
+        return 0.0
 
     import pandas as pd
 
@@ -378,15 +519,278 @@ def check_date_parse_rate(df: pl.DataFrame, col: str, max_samples: int = 100) ->
         p_s = sample_series.to_pandas()
         if pd.api.types.is_numeric_dtype(p_s):
             max_val = p_s.max()
-            if max_val is not None and (max_val > 1e8 or (20000 <= max_val <= 80000)):
+            min_val = p_s.min()
+            if min_val is not None and max_val is not None and (min_val > 1e8 or (25000 <= min_val and max_val <= 70000)):
                 return 1.0
             return 0.0
 
-        parsed = pd.to_datetime(p_s, errors="coerce", format="mixed")
-        valid = parsed.notnull().sum()
-        return float(valid) / len(p_s)
+        # Require strings to contain digits and look plausible (not pure small floats like "12.5")
+        str_vals = [str(v).strip() for v in sample_series.to_list()]
+        plausible = [
+            s for s in str_vals
+            if len(s) >= 6 and any(ch.isdigit() for ch in s) and not re.match(r"^-?\d+(?:\.\d+)?$", s)
+        ]
+        if len(plausible) / len(str_vals) < 0.5:
+            return 0.0
+
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            parsed = pd.to_datetime(pd.Series(str_vals), errors="coerce", format="mixed", dayfirst=True)
+        valid = int(parsed.notnull().sum())
+        return float(valid) / len(str_vals)
     except Exception:
         return 0.0
+
+
+def _infer_frequency_label_from_dates(dates_sorted: List[Any]) -> str:
+    if len(dates_sorted) < 2:
+        return "single-period"
+    deltas = []
+    for i in range(len(dates_sorted) - 1):
+        try:
+            diff = (dates_sorted[i + 1] - dates_sorted[i]).days
+            if diff > 0:
+                deltas.append(diff)
+        except Exception:
+            continue
+    if not deltas:
+        return "irregular"
+    med = float(np.median(deltas))
+    if med <= 2:
+        return "daily"
+    if 5 <= med <= 10:
+        return "weekly"
+    if 25 <= med <= 35:
+        return "monthly"
+    if 80 <= med <= 100:
+        return "quarterly"
+    if 350 <= med <= 380:
+        return "yearly"
+    return f"every ~{int(round(med))} days"
+
+
+def build_column_profiles(df: pl.DataFrame) -> Dict[str, Dict[str, Any]]:
+    """
+    Computes deep statistical and semantic profiles for EVERY column in a DataFrame
+    so the AI immediately understands all rows, columns, types, ranges, and categories.
+    """
+    total_rows = len(df)
+    profiles: Dict[str, Dict[str, Any]] = {}
+    if total_rows == 0:
+        return profiles
+
+    import warnings
+
+    import pandas as pd
+
+    for col in df.columns:
+        s = df[col]
+        dtype = s.dtype
+        null_cnt = int(s.null_count())
+        non_null_cnt = total_rows - null_cnt
+        null_pct = round((null_cnt / total_rows) * 100.0, 2) if total_rows > 0 else 0.0
+        unique_cnt = int(s.drop_nulls().n_unique()) if non_null_cnt > 0 else 0
+        norm = _normalize_name(col)
+
+        prof: Dict[str, Any] = {
+            "name": col,
+            "polars_dtype": str(dtype),
+            "non_null_count": non_null_cnt,
+            "null_count": null_cnt,
+            "null_pct": null_pct,
+            "unique_count": unique_cnt,
+        }
+
+        is_bool = dtype == pl.Boolean
+        is_num = dtype in NUMERIC_DTYPES
+        is_temp = dtype in (pl.Date, pl.Datetime)
+        date_rate = 1.0 if is_temp else (check_date_parse_rate(df, col) if not is_num and not is_bool else 0.0)
+
+        if is_temp or date_rate >= 0.75:
+            prof["role"] = "temporal"
+            try:
+                if is_temp:
+                    dt_series = s.cast(pl.Date).drop_nulls().unique().sort().to_list()
+                else:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        parsed = pd.to_datetime(
+                            s.drop_nulls().head(5000).to_pandas(),
+                            errors="coerce",
+                            format="mixed",
+                            dayfirst=True,
+                            utc=True,
+                        ).dropna()
+                    dt_series = sorted({d.date() for d in parsed})
+                if dt_series:
+                    prof["date_min"] = dt_series[0].isoformat()
+                    prof["date_max"] = dt_series[-1].isoformat()
+                    prof["frequency"] = _infer_frequency_label_from_dates(dt_series)
+                    prof["sample_values"] = [d.isoformat() for d in dt_series[:4]]
+            except Exception:
+                prof["sample_values"] = [str(x) for x in s.drop_nulls().head(4).to_list()]
+
+        elif is_bool:
+            prof["role"] = "boolean"
+            vc = s.drop_nulls().value_counts(sort=True).head(4).to_dicts()
+            prof["top_values"] = [{"value": str(r[col]), "count": int(r["count"])} for r in vc]
+
+        elif is_num:
+            vals = s.drop_nulls().cast(pl.Float64).to_numpy()
+            is_int_dtype = dtype in (pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
+            attr_kw = ("bedroom", "bathroom", "room", "flag", "promo", "year", "month", "quarter", "week", "day", "tier", "grade", "id", "code")
+            if is_int_dtype and unique_cnt <= 15 and (total_rows >= 20 or any(k in norm for k in attr_kw)):
+                prof["role"] = "numeric_attribute"
+            else:
+                prof["role"] = "numeric_measure"
+
+            if len(vals) > 0:
+                prof["sum"] = round(float(np.sum(vals)), 2)
+                prof["mean"] = round(float(np.mean(vals)), 2)
+                prof["median"] = round(float(np.median(vals)), 2)
+                prof["std"] = round(float(np.std(vals)), 2)
+                prof["min"] = round(float(np.min(vals)), 2)
+                prof["max"] = round(float(np.max(vals)), 2)
+                prof["zeros_count"] = int(np.sum(vals == 0))
+                prof["negatives_count"] = int(np.sum(vals < 0))
+                prof["sample_values"] = [round(float(x), 2) for x in vals[:4]]
+            if prof["role"] == "numeric_attribute":
+                vc = s.drop_nulls().value_counts(sort=True).head(6).to_dicts()
+                prof["top_values"] = [{"value": str(r[col]), "count": int(r["count"])} for r in vc]
+
+        else:
+            # Categorical / Identifier / Free text
+            if non_null_cnt > 0 and unique_cnt == non_null_cnt and total_rows >= 10:
+                prof["role"] = "identifier"
+            elif unique_cnt <= max(200, int(total_rows * 0.5)):
+                prof["role"] = "categorical"
+            else:
+                prof["role"] = "text"
+
+            vc = s.drop_nulls().value_counts(sort=True).head(6).to_dicts()
+            prof["top_values"] = [{"value": str(r[col]), "count": int(r["count"])} for r in vc]
+            prof["sample_values"] = [str(x) for x in s.drop_nulls().head(4).to_list()]
+
+        profiles[col] = prof
+
+    return profiles
+
+
+def detect_row_grain(
+    df: pl.DataFrame,
+    profiles: Dict[str, Dict[str, Any]],
+    date_col: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Determines what each individual row in the dataset represents (primary key / composite grain)."""
+    n_rows = len(df)
+    if n_rows == 0:
+        return {"grain_columns": [], "is_unique": False, "description": "Empty dataset"}
+
+    # 1. Single identifier column?
+    for col, p in profiles.items():
+        if p.get("role") == "identifier" and p.get("unique_count") == n_rows:
+            return {
+                "grain_columns": [col],
+                "is_unique": True,
+                "description": f"Each of the {n_rows:,} rows is uniquely identified by `{col}`.",
+            }
+
+    # 2. Composite grain across temporal + categorical / discrete attribute columns
+    candidate_dims = []
+    if date_col and date_col in df.columns:
+        candidate_dims.append(date_col)
+    for col, p in profiles.items():
+        if col == date_col:
+            continue
+        if p.get("role") in ("categorical", "numeric_attribute") and 1 < p.get("unique_count", 0) <= max(2000, n_rows // 2 + 2):
+            candidate_dims.append(col)
+
+    chosen_grain: List[str] = []
+    for col in candidate_dims[:5]:
+        test_cols = chosen_grain + [col]
+        u = int(df.select(test_cols).n_unique())
+        prev_u = int(df.select(chosen_grain).n_unique()) if chosen_grain else 1
+        if u > prev_u:
+            chosen_grain.append(col)
+        if u >= int(n_rows * 0.98):
+            return {
+                "grain_columns": chosen_grain,
+                "is_unique": u == n_rows,
+                "description": (
+                    f"Each row represents a record per {', '.join(f'`{c}`' for c in chosen_grain)} "
+                    f"({u:,} distinct combinations across {n_rows:,} rows)."
+                ),
+            }
+
+    if chosen_grain:
+        u = int(df.select(chosen_grain).n_unique())
+        return {
+            "grain_columns": chosen_grain,
+            "is_unique": False,
+            "description": (
+                f"Rows are organized across {', '.join(f'`{c}`' for c in chosen_grain)} "
+                f"({n_rows:,} total rows, {u:,} distinct dimension combinations)."
+            ),
+        }
+
+    return {
+        "grain_columns": df.columns[: min(3, len(df.columns))],
+        "is_unique": False,
+        "description": f"Tabular dataset containing {n_rows:,} rows across {len(df.columns)} columns.",
+    }
+
+
+def generate_suggested_questions(
+    df: pl.DataFrame,
+    profiles: Dict[str, Dict[str, Any]],
+    mapping: Dict[str, Any],
+) -> List[str]:
+    """Generates smart, dataset-aware starter prompts using the ACTUAL columns and values in df."""
+    dtype_mode = mapping.get("_dataset_type", "tabular")
+    date_col = mapping.get("date")
+    prod_col = mapping.get("product")
+    qty_col = mapping.get("quantity")
+
+    measures = [c for c, p in profiles.items() if p.get("role") == "numeric_measure"]
+    cats = [c for c, p in profiles.items() if p.get("role") in ("categorical", "numeric_attribute") and p.get("unique_count", 0) >= 2]
+
+    primary_metric = qty_col if qty_col in df.columns else (measures[0] if measures else df.columns[-1])
+    secondary_metric = next((m for m in measures if m != primary_metric), primary_metric)
+    primary_cat = prod_col if prod_col in df.columns else (cats[0] if cats else None)
+
+    suggestions: List[str] = []
+
+    if dtype_mode in ("time_series", "stock_summary") or (date_col and date_col in df.columns):
+        suggestions.append(f"Show me the future prediction for {primary_metric}")
+
+    if primary_cat and primary_cat in profiles:
+        u_cnt = profiles[primary_cat].get("unique_count", 0)
+        top_vals = [v["value"] for v in (profiles[primary_cat].get("top_values") or []) if v.get("value")]
+        if u_cnt >= 3:
+            suggestions.append(f"Top 5 {primary_cat} by {primary_metric}")
+        if len(top_vals) >= 2:
+            suggestions.append(f"Compare {top_vals[0]} vs {top_vals[1]} in {primary_cat}")
+        else:
+            suggestions.append(f"Breakdown of {primary_metric} by {primary_cat}")
+
+    if len(cats) >= 2:
+        other_cat = next((c for c in cats if c != primary_cat), cats[0])
+        suggestions.append(f"Average {secondary_metric} grouped by {other_cat}")
+    else:
+        suggestions.append(f"Summary statistics and outliers for {primary_metric}")
+
+    if dtype_mode == "stock_summary":
+        suggestions.append("What should I reorder this week?")
+
+    # Always include a dynamic CSV generation prompt!
+    if primary_cat:
+        suggestions.append(f"Generate a CSV summarizing {primary_metric} by {primary_cat}")
+    else:
+        suggestions.append(f"Generate a CSV of top 25 rows sorted by {primary_metric}")
+
+    suggestions.append("Explain all rows and columns in this dataset")
+    return suggestions[:6]
 
 
 def suggest_column_mapping_heuristics(
@@ -394,50 +798,66 @@ def suggest_column_mapping_heuristics(
     meta: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, str], Dict[str, float], Dict[str, str]]:
     """
-    Heuristically map raw dataframe columns to logical schema fields.
-    Supports both:
-    1. Transaction time series (with individual date timestamps)
-    2. Stock summary reports (aggregated inventory reports with Closing Qty and Net Sale Qty)
+    Universally maps raw dataframe columns to logical schema fields and builds rich metadata.
+    Supports:
+    1. Multi-series or single-series Time Series (daily, weekly, monthly, quarterly, yearly)
+    2. ERP Stock / Inventory Summary reports
+    3. Any General Tabular / Business Dataset (customers, finance, HR, housing, operations, etc.)
     """
-    suggested_mapping: Dict[str, str] = {}
+    suggested_mapping: Dict[str, Any] = {}
     confidence: Dict[str, float] = {}
     reasons: Dict[str, str] = {}
 
+    if len(df.columns) == 0:
+        return suggested_mapping, confidence, reasons
+
+    profiles = build_column_profiles(df)
     norm_col_map = {col: _normalize_name(col) for col in df.columns}
     used_columns = set()
 
-    # Check if there is any genuine date column in the table
-    date_candidates: List[Tuple[str, float]] = []
+    # 1. Detect genuine date/temporal columns
+    date_candidates: List[Tuple[str, float, str]] = []
     for col in df.columns:
         norm = norm_col_map[col]
-        if any(av in norm for av in LOGICAL_FIELDS["date"]["avoid"]):
-            continue
-        if df[col].dtype in (pl.Date, pl.Datetime):
-            date_candidates.append((col, 1.0))
-            continue
-        rate = check_date_parse_rate(df, col)
-        if rate > 0.4:
-            date_candidates.append((col, rate))
+        prof = profiles.get(col, {})
+        is_temp = df[col].dtype in (pl.Date, pl.Datetime)
+        rate = 1.0 if is_temp else (check_date_parse_rate(df, col) if prof.get("role") == "temporal" or df[col].dtype not in NUMERIC_DTYPES else 0.0)
+        has_date_kw = any(kw == norm or kw in norm for kw in LOGICAL_FIELDS["date"]["keywords"])
+        has_avoid = any(av in norm for av in LOGICAL_FIELDS["date"]["avoid"]) and not has_date_kw
 
-    # Check if dataset has stock on hand and sales metrics (Stock Summary mode)
+        if has_avoid and rate < 0.8:
+            continue
+        if is_temp:
+            date_candidates.append((col, 0.99, "Native Date/Datetime column"))
+        elif rate >= 0.75:
+            bonus = 0.15 if has_date_kw else 0.0
+            date_candidates.append((col, min(0.98, round(0.80 + bonus, 2)), f"Parsed {int(rate * 100)}% of values as calendar dates"))
+        elif rate >= 0.45 and has_date_kw:
+            date_candidates.append((col, 0.75, f"Temporal header & {int(rate * 100)}% valid dates"))
+
+    date_candidates.sort(key=lambda x: x[1], reverse=True)
+
+    # 2. Check for Stock Summary columns (Closing stock + Sales quantity without date column)
     stock_col = None
     for col, norm in norm_col_map.items():
-        if any(kw == norm or kw in norm for kw in LOGICAL_FIELDS["stock_on_hand"]["keywords"]):
+        if df[col].dtype in NUMERIC_DTYPES and any(kw == norm or kw in norm for kw in LOGICAL_FIELDS["stock_on_hand"]["keywords"]):
             if not any(av in norm for av in LOGICAL_FIELDS["stock_on_hand"]["avoid"]):
                 stock_col = col
                 break
 
     sale_col = None
     for col, norm in norm_col_map.items():
-        if any(kw == norm or kw in norm for kw in LOGICAL_FIELDS["quantity"]["keywords"]):
-            if not any(av in norm for av in LOGICAL_FIELDS["quantity"]["avoid"]):
+        if df[col].dtype in NUMERIC_DTYPES and any(kw == norm or kw in norm for kw in ("net_sale_qty", "sale_qty", "sales_qty", "units_sold", "sold_qty")):
+            if not any(av in norm for av in ("inward", "outward", "closing", "opening", "value", "rate", "price", "profit")):
                 sale_col = col
                 break
 
-    is_stock_summary = (not date_candidates) and (stock_col is not None or (meta and "stock" in str(meta).lower()))
+    is_stock_summary = (not date_candidates) and (
+        (stock_col is not None and sale_col is not None)
+        or (stock_col is not None and meta and "stock" in str(meta).lower())
+    )
 
     if is_stock_summary:
-        # Stock Summary Mode
         suggested_mapping["_dataset_type"] = "stock_summary"
         suggested_mapping["date"] = "__period__"
         confidence["date"] = 0.95
@@ -455,16 +875,14 @@ def suggest_column_mapping_heuristics(
             reasons["quantity"] = f"Period sales volume matched column '{sale_col}'"
             used_columns.add(sale_col)
 
-        # Map product: prioritize BRAND, then DEPARTMENT, then item/product
         for col, norm in norm_col_map.items():
-            if norm in ("brand", "product", "item", "sku", "department", "article"):
+            if col not in used_columns and norm in ("brand", "product", "item", "sku", "department", "article"):
                 suggested_mapping["product"] = col
                 confidence["product"] = 0.90
                 reasons["product"] = f"Categorical merchandise column matched '{col}'"
                 used_columns.add(col)
                 break
 
-        # Map revenue: Gross Item Sale or Sale Value
         for col, norm in norm_col_map.items():
             if col not in used_columns and any(kw in norm for kw in ("gross_item_sale", "gross_sales", "sale_value", "revenue")):
                 suggested_mapping["revenue"] = col
@@ -473,7 +891,6 @@ def suggest_column_mapping_heuristics(
                 used_columns.add(col)
                 break
 
-        # Map vendor
         for col, norm in norm_col_map.items():
             if col not in used_columns and any(kw in norm for kw in ("vendor", "supplier", "party")):
                 suggested_mapping["vendor"] = col
@@ -482,98 +899,187 @@ def suggest_column_mapping_heuristics(
                 used_columns.add(col)
                 break
 
-    else:
-        # Standard Time Series Mode
+    elif date_candidates:
+        # Time Series Mode (works for retail sales, financial/macro/housing series, single-series, etc.)
         suggested_mapping["_dataset_type"] = "time_series"
-        # Score each (field, column) pair
-        scores: Dict[str, List[Tuple[str, float, str]]] = {field: [] for field in LOGICAL_FIELDS}
+        best_date_col, best_date_conf, best_date_reason = date_candidates[0]
+        suggested_mapping["date"] = best_date_col
+        confidence["date"] = best_date_conf
+        reasons["date"] = best_date_reason
+        used_columns.add(best_date_col)
+
+        # Score remaining columns for optional & required fields
+        scores: Dict[str, List[Tuple[str, float, str]]] = {field: [] for field in LOGICAL_FIELDS if field != "date"}
 
         for col in df.columns:
+            if col in used_columns:
+                continue
             norm = norm_col_map[col]
-            is_numeric = df[col].dtype in (
-                pl.Int8, pl.Int16, pl.Int32, pl.Int64,
-                pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
-                pl.Float32, pl.Float64,
-            )
-            is_temporal = df[col].dtype in (pl.Date, pl.Datetime)
-            date_rate = check_date_parse_rate(df, col) if not is_numeric else 0.0
+            prof = profiles.get(col, {})
+            role = prof.get("role", "")
+            is_numeric = df[col].dtype in NUMERIC_DTYPES
 
             for field, cfg in LOGICAL_FIELDS.items():
-                score = 0.0
-                reason_parts = []
-
+                if field == "date":
+                    continue
                 if any(av in norm for av in cfg.get("avoid", [])):
                     continue
 
+                score = 0.0
+                reason_parts = []
+                norm_tokens = norm.split("_")
+
                 if norm in cfg["keywords"]:
-                    score += 0.70
+                    score += 0.72
                     reason_parts.append("Exact column name match")
-                elif any(kw in norm for kw in cfg["keywords"]):
-                    score += 0.40
-                    reason_parts.append("Partial column name match")
+                elif any(kw in norm_tokens or (len(kw) >= 4 and kw in norm) for kw in cfg["keywords"]):
+                    score += 0.42
+                    reason_parts.append("Column name match")
 
-                if field == "date":
-                    if is_temporal:
-                        score += 0.35
-                        reason_parts.append("Date/Datetime type")
-                    elif date_rate > 0.8:
-                        score += 0.35
-                        reason_parts.append(f"High date format match ({int(date_rate * 100)}%)")
-                elif field == "quantity":
-                    if is_numeric:
-                        score += 0.25
-                        reason_parts.append("Numeric type")
+                if field == "quantity":
+                    if not is_numeric:
+                        continue
+                    score += 0.25
+                    reason_parts.append("Numeric metric")
+                    # Prefer continuous measures over tiny discrete attribute counts (e.g. MA over bedrooms)
+                    if role == "numeric_measure":
+                        score += 0.18
+                    elif role == "numeric_attribute":
+                        score -= 0.20
                 elif field == "product":
-                    if not is_numeric and not is_temporal and date_rate < 0.2:
-                        score += 0.20
-                        reason_parts.append("Textual identifier column")
-                elif field == "revenue":
-                    if is_numeric:
-                        score += 0.25
-                        reason_parts.append("Numeric type")
+                    if is_numeric or role == "temporal":
+                        continue
+                    score += 0.25
+                    reason_parts.append("Categorical/entity column")
+                    # Prefer moderate-cardinality grouping columns over free text
+                    u_cnt = prof.get("unique_count", 0)
+                    if 1 <= u_cnt <= max(500, len(df) // 2 + 1):
+                        score += 0.12
+                elif field in ("revenue", "stock_on_hand", "profit", "cost", "discount"):
+                    if not is_numeric:
+                        continue
+                    score += 0.25
+                    reason_parts.append("Numeric type")
 
-                if score > 0.3:
+                if score >= 0.30:
                     scores[field].append((col, min(round(score, 2), 1.0), "; ".join(reason_parts)))
 
-        # Assign best matches
-        priority_order = ["date", "quantity", "product", "revenue", "stock_on_hand", "vendor", "store", "promo_flag"]
+        # Map revenue first ONLY if there is a separate stronger quantity column; otherwise map quantity first
+        priority_order = ["quantity", "product", "revenue", "stock_on_hand", "vendor", "store", "promo_flag"]
         for field in priority_order:
-            candidates = sorted(scores[field], key=lambda x: x[1], reverse=True)
-            for col, score, reason in candidates:
+            candidates = sorted(scores.get(field, []), key=lambda x: x[1], reverse=True)
+            for col, sc, rsn in candidates:
                 if col not in used_columns:
                     suggested_mapping[field] = col
-                    confidence[field] = score
-                    reasons[field] = reason
+                    confidence[field] = sc
+                    reasons[field] = rsn
                     used_columns.add(col)
                     break
 
-    # Guaranteed fallback for product and quantity
-    if "product" not in suggested_mapping:
-        for col in df.columns:
-            if col not in used_columns and df[col].dtype in (pl.Utf8, pl.Categorical):
-                suggested_mapping["product"] = col
-                confidence["product"] = 0.60
-                reasons["product"] = "Selected textual column as product"
-                used_columns.add(col)
-                break
+        # Fallback for quantity: pick highest-variance numeric_measure column (never date!)
+        if "quantity" not in suggested_mapping:
+            num_cands = [
+                c for c in df.columns
+                if c not in used_columns and df[c].dtype in NUMERIC_DTYPES and profiles.get(c, {}).get("role") == "numeric_measure"
+            ]
+            if not num_cands:
+                num_cands = [c for c in df.columns if c not in used_columns and df[c].dtype in NUMERIC_DTYPES]
+            if num_cands:
+                best_num = max(num_cands, key=lambda c: profiles.get(c, {}).get("unique_count", 0))
+                suggested_mapping["quantity"] = best_num
+                confidence["quantity"] = 0.75
+                reasons["quantity"] = f"Primary numeric measure '{best_num}'"
+                used_columns.add(best_num)
 
-    if "quantity" not in suggested_mapping:
-        for col in df.columns:
-            if col not in used_columns and df[col].dtype in (
-                pl.Int8, pl.Int16, pl.Int32, pl.Int64,
-                pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
-                pl.Float32, pl.Float64
-            ):
-                suggested_mapping["quantity"] = col
-                confidence["quantity"] = 0.60
-                reasons["quantity"] = "Selected numeric column as quantity"
-                used_columns.add(col)
-                break
+        # Fallback for product: pick categorical/attribute column, OR synthesize '__overall__' for single-series time series!
+        if "product" not in suggested_mapping:
+            cat_cands = [
+                c for c in df.columns
+                if c not in used_columns and profiles.get(c, {}).get("role") in ("categorical", "identifier", "text")
+            ]
+            if not cat_cands:
+                cat_cands = [
+                    c for c in df.columns
+                    if c not in used_columns and profiles.get(c, {}).get("role") == "numeric_attribute"
+                ]
+            if cat_cands:
+                suggested_mapping["product"] = cat_cands[0]
+                confidence["product"] = 0.75
+                reasons["product"] = f"Grouping entity column '{cat_cands[0]}'"
+                used_columns.add(cat_cands[0])
+            else:
+                suggested_mapping["product"] = "__overall__"
+                confidence["product"] = 0.90
+                reasons["product"] = "Single-series temporal dataset (overall series)"
 
-    # Attach semantics and metadata
-    suggested_mapping["_column_semantics"] = explain_columns(df.columns)
+        # Check if secondary low-cardinality dimensions exist that refine the time series grain
+        # e.g. in ma_lga_12345.csv: saledate + type + bedrooms
+        prod_c = suggested_mapping.get("product")
+        if prod_c and prod_c in df.columns:
+            pair_unique = int(df.select([best_date_col, prod_c]).n_unique())
+            if pair_unique < int(len(df) * 0.85):
+                extra_dims = [
+                    c for c in df.columns
+                    if c not in (best_date_col, prod_c, suggested_mapping.get("quantity"), suggested_mapping.get("revenue"), suggested_mapping.get("store"), suggested_mapping.get("promo_flag"))
+                    and profiles.get(c, {}).get("role") in ("categorical", "numeric_attribute")
+                    and 2 <= profiles.get(c, {}).get("unique_count", 0) <= 12
+                ]
+                if extra_dims:
+                    test_u = int(df.select([best_date_col, prod_c, extra_dims[0]]).n_unique())
+                    if test_u > pair_unique * 1.5 and test_u >= int(len(df) * 0.90):
+                        suggested_mapping["_composite_product_cols"] = [prod_c, extra_dims[0]]
+
+    else:
+        # 3. Universal General Tabular Mode (no date column needed — works for ANY CSV/Excel/JSON!)
+        suggested_mapping["_dataset_type"] = "tabular"
+        suggested_mapping["date"] = "__tabular__"
+        confidence["date"] = 0.95
+        reasons["date"] = "Cross-sectional tabular dataset (no date column required)"
+
+        # Pick best entity / category column
+        cat_cols = [c for c in df.columns if profiles.get(c, {}).get("role") in ("categorical", "identifier", "text")]
+        if cat_cols:
+            # Prefer a categorical grouping column with >=2 values, or identifier
+            grp_cats = [c for c in cat_cols if profiles.get(c, {}).get("role") == "categorical" and profiles.get(c, {}).get("unique_count", 0) >= 2]
+            best_cat = grp_cats[0] if grp_cats else cat_cols[0]
+            suggested_mapping["product"] = best_cat
+            confidence["product"] = 0.85
+            reasons["product"] = f"Primary entity/category column '{best_cat}'"
+            used_columns.add(best_cat)
+        else:
+            suggested_mapping["product"] = df.columns[0]
+            confidence["product"] = 0.70
+            reasons["product"] = f"Primary column '{df.columns[0]}'"
+            used_columns.add(df.columns[0])
+
+        # Pick best numeric measure column (or '__count__' if table has only text/categorical columns)
+        num_cols = [c for c in df.columns if c not in used_columns and df[c].dtype in NUMERIC_DTYPES]
+        if num_cols:
+            measures = [c for c in num_cols if profiles.get(c, {}).get("role") == "numeric_measure"]
+            best_num = measures[0] if measures else num_cols[0]
+            suggested_mapping["quantity"] = best_num
+            confidence["quantity"] = 0.85
+            reasons["quantity"] = f"Primary numeric metric '{best_num}'"
+            used_columns.add(best_num)
+        else:
+            suggested_mapping["quantity"] = "__count__"
+            confidence["quantity"] = 0.80
+            reasons["quantity"] = "Record count metric (categorical table)"
+
+    # Attach rich column profiles, semantics, row grain, and starter prompts
+    row_grain = detect_row_grain(
+        df,
+        profiles,
+        date_col=suggested_mapping.get("date") if suggested_mapping.get("date") in df.columns else None,
+    )
+    suggested_mapping["_column_semantics"] = explain_columns(df.columns, df=df)
+    suggested_mapping["_column_profiles"] = profiles
+    suggested_mapping["_row_grain"] = row_grain
+    suggested_mapping["_suggested_questions"] = generate_suggested_questions(df, profiles, suggested_mapping)
     if meta and meta.get("date_range"):
         suggested_mapping["_date_range"] = meta.get("date_range")
+    if meta and meta.get("report_name"):
+        suggested_mapping["_report_name"] = meta.get("report_name")
 
     return suggested_mapping, confidence, reasons
 
@@ -581,7 +1087,9 @@ def suggest_column_mapping_heuristics(
 def infer_column_mapping_with_gemma(df: pl.DataFrame) -> Dict[str, str]:
     """Uses local Gemma LLM to infer column mapping from column names and sample rows."""
     import json
+
     import httpx
+
     from apps.api.app.config import settings
 
     cols = df.columns
