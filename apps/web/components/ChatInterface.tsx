@@ -64,20 +64,27 @@ export function ChatInterface({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
   const [showAllColumns, setShowAllColumns] = useState(false);
   const [expandedThoughts, setExpandedThoughts] = useState<Record<string, boolean>>({});
+  const [cotEnabled, setCotEnabled] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const zeroFileInputRef = useRef<HTMLInputElement>(null);
   const chatFileInputRef = useRef<HTMLInputElement>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
 
-  // Load conversation when dataset changes or background job finishes
+  // Load conversation and global settings when dataset changes or background job finishes
   useEffect(() => {
     if (!dataset) {
       setMessages([]);
       return;
     }
     loadMessages(dataset.id);
+    api.getSettings().then((s) => {
+      if (s?.cot_enabled !== undefined) {
+        setCotEnabled(s.cot_enabled);
+      }
+    }).catch(() => {});
   }, [dataset?.id, refreshTrigger]);
 
   const loadMessages = async (datasetId: string) => {
@@ -112,6 +119,7 @@ export function ChatInterface({
     if (!query || !dataset || isSending) return;
 
     setInput("");
+    setChatError(null);
     setIsSending(true);
 
     const tempUserMsg: ChatMessage = {
@@ -124,19 +132,15 @@ export function ChatInterface({
     scrollToBottom();
 
     try {
-      const assistantMsg = await api.sendChatMessage(dataset.id, query);
+      const assistantMsg = await api.sendChatMessage(dataset.id, query, cotEnabled);
       setMessages((prev) => [...prev.filter((m) => m.id !== tempUserMsg.id), tempUserMsg, assistantMsg]);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: "err-" + Date.now(),
-          role: "assistant",
-          content: "Sorry, I could not query the local engine. Please verify that the API is running locally.",
-          created_at: new Date().toISOString(),
-        },
-      ]);
+      setMessages((prev) => prev.filter((m) => m.id !== tempUserMsg.id));
+      if (!textToSend) {
+        setInput(query);
+      }
+      setChatError(err?.message || "Ollama model is unavailable or failed to calculate the response. Nothing was saved.");
     } finally {
       setIsSending(false);
       scrollToBottom();
@@ -250,6 +254,22 @@ export function ChatInterface({
               <span>Reorder PO</span>
             </a>
           )}
+          <button
+            onClick={() => setCotEnabled(!cotEnabled)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition ${
+              cotEnabled
+                ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25"
+                : "bg-[#2a2a2a] border-[#383838] text-[#8e8e8e] hover:text-[#ececec] hover:bg-[#333333]"
+            }`}
+            title={
+              cotEnabled
+                ? "Chain-of-Thought is ON (deep reasoning & multi-step plans). Click to disable for faster responses."
+                : "Chain-of-Thought is OFF (fast direct answers). Click to enable for complex analytical planning."
+            }
+          >
+            <Terminal className="w-3.5 h-3.5" />
+            <span>CoT {cotEnabled ? "ON" : "OFF"}</span>
+          </button>
           <button
             onClick={handleResetChat}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2a2a2a] hover:bg-[#333333] border border-[#383838] text-[#8e8e8e] hover:text-rose-400 text-xs font-medium transition"
@@ -986,6 +1006,23 @@ export function ChatInterface({
             <div className="flex items-center gap-2 text-xs text-[#8e8e8e] py-1">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
               <span>Reasoning step-by-step across schema, executing SQL/models, and verifying facts...</span>
+            </div>
+          )}
+
+          {chatError && (
+            <div className="flex items-start gap-2.5 p-3 rounded-xl bg-red-950/40 border border-red-800/60 text-xs text-red-200">
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <div className="flex-1 space-y-0.5">
+                <p className="font-medium text-red-300">Calculation failed — nothing was saved</p>
+                <p className="text-[11px] text-red-200/80">{chatError}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setChatError(null)}
+                className="text-[11px] text-red-300 hover:text-white px-1.5"
+              >
+                Dismiss
+              </button>
             </div>
           )}
 

@@ -1,0 +1,2 @@
+date,series,predicted_Sales Qty,lower_80_ci,upper_80_ci,model
+2026-11-25,Overall Sales Qty,237.8,42.84,510.8,SeasonalNaive

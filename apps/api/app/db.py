@@ -192,7 +192,7 @@ class ChatMessage(Base):
 
     @payload.setter
     def payload(self, val: Any) -> None:
-        self.payload_json = json.dumps(val) if val is not None else None
+        self.payload_json = json.dumps(val, default=str) if val is not None else None
 
 
 def init_db() -> None:

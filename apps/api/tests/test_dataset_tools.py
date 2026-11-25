@@ -1,14 +1,17 @@
-import pytest
 import polars as pl
+import pytest
+
 from apps.api.app.services.dataset_tools import (
-    resolve_column_name,
-    execute_rank_top_bottom,
-    execute_filter_and_aggregate,
+    TOOL_DEFINITIONS,
+    discover_query_context,
     execute_column_distribution_stats,
     execute_compare_groups,
+    execute_filter_and_aggregate,
     execute_inspect_raw_sample,
-    TOOL_DEFINITIONS,
+    execute_rank_top_bottom,
+    resolve_column_name,
 )
+from apps.api.app.services.narrator import validate_narrative_traceability
 
 
 @pytest.fixture
@@ -87,4 +90,38 @@ def test_execute_inspect_raw_sample(sample_df):
     res = execute_inspect_raw_sample(sample_df, search_column="DEPARTMENT", keyword="JEANS", limit=5)
     assert res["tool_name"] == "inspect_raw_sample"
     assert res["facts"]["records_matched"] == 2
+
+
+def test_discover_query_context_high_cardinality_and_full_totals():
+    # Create dataset with >1000 unique BRAND values to ensure no 400-cardinality cutoff drops brands
+    brands = [f"BRAND_{i:04d}" for i in range(1200)] + ["PEPE", "PEPE-KIDS", "MUFTI", "JOCKEY", "BEE-VEE"]
+    df_large = pl.DataFrame({
+        "BRAND": brands,
+        "Sale Qty": [10.0] * len(brands),
+        "Profit Amt(In-rate)": [100.0] * len(brands),
+    })
+    ctx = discover_query_context("Total sales and profit of brand MUFTI JOCKEY and BEE-VEE", df_large)
+    brand_filters = [f for f in ctx["matched_value_filters"] if f["column"] == "BRAND"]
+    assert brand_filters, "Expected BRAND values to be matched even with >1200 unique values"
+    matched_vals = set(brand_filters[0]["values"])
+    assert {"MUFTI", "JOCKEY", "BEE-VEE"}.issubset(matched_vals)
+
+    ctx_pepe = discover_query_context("Total sales of pepe", df_large)
+    pepe_vals = set(ctx_pepe["matched_value_filters"][0]["values"])
+    assert "PEPE" in pepe_vals
+    assert "PEPE-KIDS" in pepe_vals
+
+    # Verify rank_top_bottom computes grand total across ALL 1,205 entities, not just top N
+    rank_res = execute_rank_top_bottom(df_large, dimension="BRAND", metric="Sale Qty", n=5, ascending=False)
+    assert rank_res["facts"]["total_entities"] == len(brands)
+    assert rank_res["facts"]["grand_total_across_all_entities"] == float(len(brands) * 10.0)
+
+
+def test_strict_narrative_traceability_rejects_hallucinations():
+    facts = {"total_sales": 615.0, "records": 1297}
+    assert validate_narrative_traceability("Total sales are 615 across 1,297 records.", facts) is True
+    assert validate_narrative_traceability("1. Total sales are 615.", facts) is True
+    # Must reject hallucinated numbers even in small ranges (e.g. 5 or 618)
+    assert validate_narrative_traceability("Total sales are 618 across 5 brands.", facts) is False
+    assert validate_narrative_traceability("Total sales are 5 units.", facts) is False
 

@@ -49,26 +49,28 @@ def _collect_fact_numbers(obj: Any) -> Set[float]:
 def validate_narrative_traceability(
     text: str,
     facts: Dict[str, Any],
-    tolerance: float = 1.5,
+    tolerance: float = 0.05,
 ) -> bool:
     """
     Principle 2: Every number in an AI explanation must be traceable.
     Extract every number from the generated text and verify it exists in the facts JSON.
-    Allows structural list numbers (e.g. 1..20, common CI levels) and rounding tolerance.
+    Strips markdown ordered-list prefixes (e.g. '1. ') so list formatting is allowed,
+    and requires every analytical figure to match computed facts within tight rounding tolerance.
     """
-    extracted = extract_numbers_from_text(text)
+    cleaned_text = re.sub(r"(?m)^\s*\d+\.\s+", "", text)
+    extracted = extract_numbers_from_text(cleaned_text)
     if not extracted:
         return True
 
     allowed_numbers = _collect_fact_numbers(facts)
-    structural = {float(i) for i in range(0, 21)} | {80.0, 90.0, 95.0, 100.0}
+    structural = {80.0, 90.0, 95.0, 100.0}
 
     for num in extracted:
         if num in structural:
             continue
         matched = False
         for allowed in allowed_numbers:
-            if abs(num - allowed) <= tolerance or (abs(allowed) > 0 and abs(num - allowed) / abs(allowed) < 0.03):
+            if abs(num - allowed) <= tolerance or (abs(allowed) > 0 and abs(num - allowed) / abs(allowed) < 0.005):
                 matched = True
                 break
         if not matched:

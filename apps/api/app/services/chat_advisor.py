@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from apps.api.app.config import settings
 from apps.api.app.db import ChatMessage, Dataset, ProductForecast
+from apps.api.app.services.dataset_tools import OllamaUnavailableError
 from apps.api.app.services.narrator import validate_narrative_traceability
 
 logger = logging.getLogger("advisor.chat")
@@ -410,33 +411,42 @@ async def _try_direct_duckdb_analyst(
     available_cols: List[str],
     col_semantics: Dict[str, str],
     col_profiles: Dict[str, Dict[str, Any]],
-    recent_history: List[Dict[str, str]],
+    recent_history: Optional[List[Dict[str, str]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Universal SQL fallback: translates any open-ended analytical question into a read-only
-    DuckDB SELECT query over `data` so virtually any tabular question can be answered accurately.
+    Universal SQL analyst: translates any open-ended analytical question into a read-only
+    DuckDB SELECT query over the ENTIRE `data` table. Stateless (no memory) and strictly requires Ollama.
     """
     from apps.api.app.services.dataset_tools import (
         _build_schema_context_for_agent,
         execute_sql_query_tool,
+        get_duckdb_ready_dataframe,
     )
 
-    schema_block = _build_schema_context_for_agent(available_cols, col_semantics, col_profiles)
-    hist_str = "\n".join(f"{m['role'].upper()}: {m['content'][:180]}" for m in recent_history[-4:])
+    try:
+        duck_df = get_duckdb_ready_dataframe(dataset)
+        total_rows = len(duck_df)
+    except Exception:
+        duck_df = None
+        total_rows = dataset.row_count or 0
+
+    schema_block = _build_schema_context_for_agent(available_cols, col_semantics, col_profiles, df=duck_df)
     prompt = (
-        "You are a senior SQL Data Analyst. Write a single read-only DuckDB SELECT query on table `data` "
-        "to answer the user's question accurately.\n"
-        f"Table `data` schema ({len(available_cols)} columns):\n{schema_block}\n\n"
-        f"Recent conversation:\n{hist_str}\n\n"
+        f"You are a senior SQL Data Analyst. Write a single read-only DuckDB SELECT query on table `data` (containing ALL {total_rows:,} rows) "
+        "to calculate the exact answer to the user's question.\n"
+        f"Table `data` schema ({len(available_cols)} columns, {total_rows:,} rows):\n{schema_block}\n\n"
         f"User question: \"{query}\"\n\n"
         "Rules:\n"
         "- Always wrap column names in double quotes (e.g. \"Sale Qty\", \"MA\").\n"
-        "- Limit output to at most 25 rows unless counting/aggregating.\n"
+        "- ONLY pass POPULATED NUMERIC columns to SUM/AVG/MIN/MAX. NEVER aggregate EMPTY / 100% NULL columns.\n"
+        "- For dates in DuckDB: NEVER use 2-arg DATE() or compare a DATE column directly to integer years (e.g. \"col\" BETWEEN 2024 AND 2026 is INVALID). Use EXTRACT(YEAR FROM \"col\") BETWEEN 2024 AND 2026, DATE_TRUNC('year', \"col\"), STRFTIME(\"col\", '%Y-%m'), or \"col\" >= (SELECT MAX(\"col\") FROM data) - INTERVAL '3 years'.\n"
+        "- ALWAYS compute over the ENTIRE `data` table (all rows). NEVER add LIMIT unless the user explicitly asks for Top N / Bottom N.\n"
+        "- Use case-insensitive matching (`ILIKE` or `LOWER(...)`) when filtering text columns.\n"
         "- If the question is purely conversational (e.g. 'hello', 'thanks') and cannot be answered by querying `data`, return {\"sql\": null}.\n"
         "Respond ONLY in JSON: {\"sql\": \"SELECT ... FROM data ...\" | null, \"title\": \"Short analysis title\"}"
     )
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
                 f"{settings.OLLAMA_URL}/api/generate",
                 json={
@@ -447,20 +457,29 @@ async def _try_direct_duckdb_analyst(
                     "options": {"temperature": 0.0},
                 },
             )
-            if resp.status_code == 200:
-                parsed = json.loads(resp.json().get("response", "{}"))
-                sql = parsed.get("sql")
-                if sql and isinstance(sql, str) and sql.strip():
-                    res = execute_sql_query_tool(
-                        dataset=dataset,
-                        sql=sql,
-                        title=parsed.get("title") or "Custom SQL Analysis",
-                        user_query=query,
-                    )
-                    if not res.get("error"):
-                        return res
+            if resp.status_code != 200:
+                raise OllamaUnavailableError(
+                    f"Ollama model '{settings.OLLAMA_MODEL}' returned HTTP {resp.status_code} at {settings.OLLAMA_URL}."
+                )
+            parsed = json.loads(resp.json().get("response", "{}"))
+            sql = parsed.get("sql")
+            if sql and isinstance(sql, str) and sql.strip():
+                res = execute_sql_query_tool(
+                    dataset=dataset,
+                    sql=sql,
+                    title=parsed.get("title") or "Custom SQL Analysis",
+                    user_query=query,
+                )
+                if not res.get("error"):
+                    return res
+                return res
+    except OllamaUnavailableError:
+        raise
     except Exception as e:
-        logger.warning(f"Direct DuckDB analyst fallback error: {e}")
+        logger.warning(f"Direct DuckDB analyst error: {e}")
+        raise OllamaUnavailableError(
+            f"Ollama model '{settings.OLLAMA_MODEL}' at {settings.OLLAMA_URL} is unavailable or not responding: {e}"
+        ) from e
     return None
 
 
@@ -472,14 +491,14 @@ async def answer_user_query(
     dataset: Dataset,
     query: str,
     db: Session,
+    use_cot: bool = True,
 ) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     """
     Universal AI Data Analyst query handler:
-    - Understands 100% of rows & columns for any uploaded format
-    - Maintains multi-turn conversation context
-    - Executes DuckDB SQL, Polars aggregations, correlations, anomaly detection,
-      on-demand future forecasting, and custom CSV/Excel file generation
-    - Validates numerical traceability against deterministic facts
+    - Strictly requires Ollama (raises OllamaUnavailableError if unreachable or non-responsive)
+    - Stateless across turns (never relies on conversation memory or cached answers)
+    - Always executes calculations across 100% of rows & columns in the uploaded dataset
+    - Validates numerical traceability strictly against calculated outputs
     """
     query_lower = query.lower().strip()
     forecasts = (
@@ -498,24 +517,6 @@ async def answer_user_query(
             available_cols = get_dataset_dataframe(dataset).columns
         except Exception:
             available_cols = []
-
-    prior_msgs = (
-        db.query(ChatMessage)
-        .filter(
-            ChatMessage.dataset_id == dataset.id,
-            ChatMessage.card_type.is_(None)
-            | ChatMessage.card_type.notin_(
-                ["health_summary", "forecast_proof", "inventory_decision", "executive_summary"]
-            ),
-        )
-        .order_by(ChatMessage.created_at.desc())
-        .limit(7)
-        .all()
-    )
-    recent_history = [
-        {"role": m.role, "content": m.content}
-        for m in reversed(prior_msgs[1:])
-    ]
 
     is_csv_generation = (
         any(ext in query_lower for ext in ("csv", "excel", "xlsx", "spreadsheet"))
@@ -541,7 +542,7 @@ async def answer_user_query(
         and not any(w in query_lower for w in ("why was", "wape", "mase", "which model won", "accuracy"))
     )
 
-    # 1. Schema / Row / Column Understanding Questions
+    # 1. Schema / Row / Column Understanding Questions (verified through Ollama)
     is_schema_definition_query = (
         any(
             w in query_lower
@@ -557,9 +558,8 @@ async def answer_user_query(
         and not any(w in query_lower for w in ["reorder", "purchase", "top ", "bottom ", "sum ", "average ", "compare "])
     )
     if is_schema_definition_query:
-        return await _answer_schema_query(dataset, health, query, col_map=col_map)
+        return await _answer_schema_query(dataset, health, query, col_map=col_map, use_cot=use_cot)
 
-    # 2. Specific single-product inspection (when user asks e.g. "Tell me about PROD_01")
     target_forecast: Optional[ProductForecast] = None
     if not is_csv_generation and not any(w in query_lower for w in ("compare", " vs ", "versus", "top ", "bottom ")):
         for f in forecasts:
@@ -567,51 +567,51 @@ async def answer_user_query(
                 target_forecast = f
                 break
 
-    if target_forecast and not is_future_prediction:
-        return await _answer_product_query(dataset, target_forecast, query)
-
-    # 3. CHAIN-OF-THOUGHT AGENTIC DATA ANALYST PIPELINE
+    # 2. CHAIN-OF-THOUGHT AGENTIC DATA ANALYST PIPELINE (Always calculates fresh on full dataset)
     t_start = time.perf_counter()
-    try:
-        from apps.api.app.services.dataset_tools import (
-            execute_dataset_tool,
-            get_duckdb_ready_dataframe,
-            plan_analysis_with_cot,
-            run_duckdb_df,
-        )
+    from apps.api.app.services.dataset_tools import (
+        execute_dataset_tool,
+        get_duckdb_ready_dataframe,
+        plan_analysis_with_cot,
+        run_duckdb_df,
+    )
 
-        tool_name, tool_args, cot_steps, secondary_sql = await plan_analysis_with_cot(
-            dataset=dataset,
-            query=query,
-            available_columns=available_cols,
-            col_semantics=col_semantics,
-            col_profiles=col_profiles,
-            recent_history=recent_history,
-        )
-        if tool_name:
-            if tool_name == "forecast_future" and target_forecast and not tool_args.get("filter_value"):
-                prod_col_mapped = col_map.get("product")
-                if prod_col_mapped and prod_col_mapped in available_cols:
-                    tool_args["filter_column"] = prod_col_mapped
-                    tool_args["filter_value"] = target_forecast.product_id
+    tool_name, tool_args, cot_steps, secondary_sql = await plan_analysis_with_cot(
+        dataset=dataset,
+        query=query,
+        available_columns=available_cols,
+        col_semantics=col_semantics,
+        col_profiles=col_profiles,
+        recent_history=None,
+        use_cot=use_cot,
+        require_ollama=True,
+    )
 
-            tool_res = execute_dataset_tool(dataset, tool_name, tool_args, db, user_query=query)
-            if tool_res and not tool_res.get("error"):
-                # Optional 2nd-step supporting SQL execution from CoT plan
-                if secondary_sql and isinstance(secondary_sql, str):
-                    try:
-                        sup_df = run_duckdb_df(get_duckdb_ready_dataframe(dataset), secondary_sql)
-                        if len(sup_df) > 0:
-                            sup_records = sup_df.head(5).to_dicts()
-                            tool_res.setdefault("facts", {})["supporting_context"] = sup_records
+    tool_error: Optional[str] = None
+    if tool_name:
+        if tool_name == "forecast_future" and target_forecast and not tool_args.get("filter_value"):
+            prod_col_mapped = col_map.get("product")
+            if prod_col_mapped and prod_col_mapped in available_cols:
+                tool_args["filter_column"] = prod_col_mapped
+                tool_args["filter_value"] = target_forecast.product_id
+
+        tool_res = execute_dataset_tool(dataset, tool_name, tool_args, db, user_query=query)
+        if tool_res and not tool_res.get("error"):
+            if secondary_sql and isinstance(secondary_sql, str):
+                try:
+                    sup_df = run_duckdb_df(get_duckdb_ready_dataframe(dataset), secondary_sql)
+                    if len(sup_df) > 0:
+                        sup_records = sup_df.head(20).to_dicts()
+                        tool_res.setdefault("facts", {})["supporting_context"] = sup_records
+                        if use_cot:
                             cot_steps.append({
                                 "phase": "Supporting Context Query",
                                 "thought": f"Executed secondary context SQL (`{secondary_sql}`) -> {len(sup_df)} baseline row(s).",
                             })
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
-                # Record deterministic execution & self-reflection steps in CoT trace
+            if use_cot:
                 exec_detail = (
                     f"Ran `{tool_res.get('tool_name')}`"
                     + (f" — SQL: `{tool_res['sql_query']}`" if tool_res.get("sql_query") else "")
@@ -621,44 +621,26 @@ async def answer_user_query(
                 for refl in tool_res.get("self_reflection") or []:
                     cot_steps.append({"phase": "Self-Reflection & Recovery", "thought": str(refl)})
 
-                narrative = await _explain_tool_result_with_gemma(
-                    query, tool_res, col_semantics, cot_steps=cot_steps
-                )
-                elapsed_ms = int(round((time.perf_counter() - t_start) * 1000))
+            narrative = await _explain_tool_result_with_gemma(
+                query, tool_res, col_semantics, cot_steps=cot_steps if use_cot else None
+            )
+            elapsed_ms = int(round((time.perf_counter() - t_start) * 1000))
+            if use_cot:
                 tool_res["reasoning_steps"] = cot_steps
-                tool_res["execution_ms"] = elapsed_ms
+            tool_res["execution_ms"] = elapsed_ms
 
-                card_t = (
-                    "csv_export"
-                    if tool_res.get("tool_name") == "generate_csv_export"
-                    else ("forecast_result" if tool_res.get("tool_name") == "forecast_future" else "tool_result")
-                )
-                return narrative, card_t, tool_res
-            elif tool_res and tool_res.get("error") and is_future_prediction:
-                return tool_res["error"], None, None
-    except Exception as e_tool:
-        logger.warning(f"Agentic CoT tool execution error: {e_tool}")
+            card_t = (
+                "csv_export"
+                if tool_res.get("tool_name") == "generate_csv_export"
+                else ("forecast_result" if tool_res.get("tool_name") == "forecast_future" else "tool_result")
+            )
+            return narrative, card_t, tool_res
+        elif tool_res and tool_res.get("error"):
+            tool_error = str(tool_res["error"])
+            if is_future_prediction:
+                return tool_error, None, None
 
-    # 4. Domain-specific handlers when applicable
-    is_inv = _is_inventory_domain(col_map, health)
-    if is_inv and forecasts and any(w in query_lower for w in ["reorder", "restock", "purchase order", "what should i order"]):
-        return await _answer_reorder_query(dataset, forecasts, query)
-
-    if is_inv and forecasts and any(w in query_lower for w in ["stockout", "shortage", "high risk"]):
-        return await _answer_risk_query(dataset, forecasts, query)
-
-    if forecasts and any(w in query_lower for w in ["timesfm", "baseline", "autoets", "croston", "arima", "accuracy", "wape", "mase"]):
-        return await _answer_model_query(dataset, forecasts, query)
-
-    if health.get("stock_health") and any(
-        w in query_lower for w in ["out of stock", "overstock", "overstocked", "critical stock", "stock health", "zero stock"]
-    ):
-        return await _answer_stock_health_query(dataset, health, query)
-
-    if any(w in query_lower for w in ["clean", "health", "missing", "quality", "duplicates"]):
-        return await _answer_health_query(dataset, health, query)
-
-    # 5. Universal DuckDB SQL Analyst Pass for any remaining analytical question
+    # 3. Direct DuckDB SQL Analyst Pass on full dataset when planner returned null or tool failed
     if available_cols:
         sql_res = await _try_direct_duckdb_analyst(
             dataset=dataset,
@@ -666,28 +648,55 @@ async def answer_user_query(
             available_cols=available_cols,
             col_semantics=col_semantics,
             col_profiles=col_profiles,
-            recent_history=recent_history,
+            recent_history=None,
         )
         if sql_res and not sql_res.get("error"):
-            fallback_cot = [
-                {"phase": "Schema Grounding", "thought": f"Inspected {len(available_cols)} columns on `{dataset.name}`."},
-                {"phase": "DuckDB SQL Synthesis", "thought": f"Executed `{sql_res.get('sql_query', 'SELECT')}`."},
-            ]
-            for refl in sql_res.get("self_reflection") or []:
-                fallback_cot.append({"phase": "Self-Reflection & Recovery", "thought": str(refl)})
+            if use_cot:
+                fallback_cot = [
+                    {"phase": "Schema Grounding", "thought": f"Inspected all {len(available_cols)} columns on `{dataset.name}`."},
+                    {"phase": "DuckDB SQL Synthesis", "thought": f"Executed `{sql_res.get('sql_query', 'SELECT')}`."},
+                ]
+                for refl in sql_res.get("self_reflection") or []:
+                    fallback_cot.append({"phase": "Self-Reflection & Recovery", "thought": str(refl)})
+            else:
+                fallback_cot = None
             narrative = await _explain_tool_result_with_gemma(query, sql_res, col_semantics, cot_steps=fallback_cot)
-            sql_res["reasoning_steps"] = fallback_cot
+            if fallback_cot:
+                sql_res["reasoning_steps"] = fallback_cot
             sql_res["execution_ms"] = int(round((time.perf_counter() - t_start) * 1000))
             return narrative, "tool_result", sql_res
+        elif sql_res and sql_res.get("error"):
+            tool_error = str(sql_res["error"])
 
-    # 6. Top movers / financial / general overview fallbacks
-    if any(w in query_lower for w in ["top brand", "top seller", "best seller", "best selling", "most sold", "top moving"]):
-        return await _answer_top_movers_query(dataset, health, forecasts, query)
+    if tool_error:
+        return f"Could not complete calculation on dataset `{dataset.name}`: {tool_error}", None, None
 
-    if any(w in query_lower for w in ["profit", "margin", "revenue", "gross sales", "cogs", "discount"]):
-        return await _answer_financial_query(dataset, health, col_semantics, query)
-
-    return await _answer_general_query(dataset, forecasts, health, query, col_map=col_map)
+    # 4. Purely conversational query (Ollama confirmed no SQL/calculation needed) — respond via Ollama without inventing numbers
+    total_rows = health.get("total_rows_raw") or dataset.row_count or 0
+    conv_facts = {
+        "dataset_name": dataset.name,
+        "total_rows": total_rows,
+        "total_columns": len(available_cols),
+        "columns_available": available_cols,
+    }
+    conv_fallback = (
+        f"Dataset **{dataset.name}** ({total_rows:,} rows × {len(available_cols)} columns) is loaded. "
+        "Ask any analytical question and I will calculate the exact result directly from the dataset."
+    )
+    conv_cot = (
+        [{"phase": "Conversational Response", "thought": f"Verified {total_rows:,} rows × {len(available_cols)} columns on `{dataset.name}`."}]
+        if use_cot
+        else None
+    )
+    conv_text = await _call_gemma_with_facts(
+        query,
+        conv_facts,
+        conv_fallback,
+        col_context=col_semantics,
+        cot_steps=conv_cot,
+    )
+    conv_payload = {"reasoning_steps": conv_cot} if (use_cot and conv_cot) else None
+    return conv_text, None, conv_payload
 
 
 async def _call_gemma_with_facts(
@@ -698,47 +707,84 @@ async def _call_gemma_with_facts(
     cot_steps: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     """
-    Invokes local Gemma with Chain-of-Thought Synthesis (`synthesis_thought` -> `answer_markdown`),
-    verifying every number against deterministic facts.
+    Invokes local Gemma to explain deterministic facts.
+    - When cot_steps is a list (COT enabled): uses structured JSON with `synthesis_thought` + `answer_markdown`,
+      giving the model a reasoning scratchpad that improves accuracy within its limited context window.
+    - When cot_steps is None (COT disabled): uses a faster direct-answer prompt (no JSON overhead, lower latency).
+    Both paths verify numbers against facts before returning.
     """
     col_hint = ""
     if col_context:
         items = list(col_context.items())[:24]
         col_hint = "Dataset columns: " + "; ".join(f"`{c}` = {m}" for c, m in items) + ".\n"
 
-    system_instruction = (
-        "You are a Senior AI Data Analyst capable of analyzing any dataset from any domain.\n"
-        f"{col_hint}"
-        "Use Chain-of-Thought: FIRST reason through the exact numbers, comparisons, shares, and edge cases in `synthesis_thought`, "
-        "and THEN write a clear, insightful, well-structured Markdown answer in `answer_markdown` (2-5 concise sentences or crisp bullets).\n"
-        "CRITICAL RULES:\n"
-        "(1) Never invent, estimate, or hallucinate numbers — every single number in `answer_markdown` MUST appear in the provided JSON facts.\n"
-        "(2) Highlight the headline takeaway first, then key comparisons/shares/trends from `computed_insights` if present.\n"
-        "(3) Adapt your terminology naturally to the dataset's actual domain and column names (do NOT use retail/inventory jargon unless the columns are retail inventory).\n"
-        "Respond ONLY in valid JSON: {\"synthesis_thought\": \"...\", \"answer_markdown\": \"...\"}"
-    )
-    user_prompt = f"Facts: {json.dumps(facts, default=str)}\n\nQuestion: {prompt}"
+    use_cot = cot_steps is not None
 
-    try:
-        async with httpx.AsyncClient(timeout=14.0) as client:
-            resp = await client.post(
-                f"{settings.OLLAMA_URL}/api/generate",
-                json={
-                    "model": settings.OLLAMA_MODEL,
-                    "system": system_instruction,
-                    "prompt": user_prompt,
-                    "format": "json",
-                    "stream": False,
-                    "options": {"temperature": 0.05},
-                },
-            )
-            if resp.status_code == 200:
+    if use_cot:
+        # ── COT MODE: structured JSON with synthesis scratchpad ──
+        system_instruction = (
+            "You are a Senior AI Data Analyst capable of analyzing any dataset from any domain.\n"
+            f"{col_hint}"
+            "Use Chain-of-Thought: FIRST reason through the exact numbers, comparisons, shares, and edge cases in `synthesis_thought`, "
+            "and THEN write a clear, insightful, well-structured Markdown answer in `answer_markdown` (2-5 concise sentences or crisp bullets).\n"
+            "CRITICAL RULES:\n"
+            "(1) Never invent, estimate, or hallucinate numbers — every single number in `answer_markdown` MUST appear in the provided JSON facts.\n"
+            "(2) Highlight the headline takeaway first, then key comparisons/shares/trends from `computed_insights` if present.\n"
+            "(3) Adapt your terminology naturally to the dataset's actual domain and column names (do NOT use retail/inventory jargon unless the columns are retail inventory).\n"
+            "Respond ONLY in valid JSON: {\"synthesis_thought\": \"...\", \"answer_markdown\": \"...\"}"
+        )
+        user_prompt = f"Facts: {json.dumps(facts, default=str)}\n\nQuestion: {prompt}"
+        resp_format = "json"
+    else:
+        # ── FAST MODE: direct Markdown answer, no JSON overhead ──
+        system_instruction = (
+            "You are a Senior AI Data Analyst. Give a clear, concise Markdown answer (2-5 sentences or crisp bullets).\n"
+            f"{col_hint}"
+            "RULES: (1) Never invent numbers — only cite numbers from the provided facts. "
+            "(2) Headline takeaway first. (3) Match terminology to the dataset's domain."
+        )
+        user_prompt = f"Facts: {json.dumps(facts, default=str)}\n\nQuestion: {prompt}"
+        resp_format = None  # plain text, not JSON
+
+    for attempt in range(2):
+        strict_note = (
+            "\nCRITICAL CORRECTION: Your previous response included a number not found in Facts. "
+            "Every single number MUST match Facts verbatim.\n"
+            if attempt == 1
+            else ""
+        )
+        try:
+            ollama_payload: Dict[str, Any] = {
+                "model": settings.OLLAMA_MODEL,
+                "system": system_instruction,
+                "prompt": user_prompt + strict_note,
+                "stream": False,
+                "options": {"temperature": 0.0},
+            }
+            if resp_format:
+                ollama_payload["format"] = resp_format
+
+            timeout = 60.0
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(
+                    f"{settings.OLLAMA_URL}/api/generate",
+                    json=ollama_payload,
+                )
+                if resp.status_code != 200:
+                    raise OllamaUnavailableError(
+                        f"Ollama model '{settings.OLLAMA_MODEL}' returned HTTP {resp.status_code} at {settings.OLLAMA_URL}."
+                    )
                 raw = resp.json().get("response", "").strip()
-                try:
-                    parsed = json.loads(raw)
-                    synth_thought = str(parsed.get("synthesis_thought", "")).strip()
-                    ans_md = str(parsed.get("answer_markdown", "")).strip()
-                except Exception:
+
+                if use_cot:
+                    try:
+                        parsed = json.loads(raw)
+                        synth_thought = str(parsed.get("synthesis_thought", "")).strip()
+                        ans_md = str(parsed.get("answer_markdown", "")).strip()
+                    except Exception:
+                        synth_thought = ""
+                        ans_md = raw
+                else:
                     synth_thought = ""
                     ans_md = raw
 
@@ -749,13 +795,18 @@ async def _call_gemma_with_facts(
                             "thought": (synth_thought + " — " if synth_thought else "") + "All cited figures verified against deterministic facts ✓",
                         })
                     return ans_md
-    except Exception as e:
-        logger.warning(f"Ollama CoT synthesis fallback: {e}.")
+        except OllamaUnavailableError:
+            raise
+        except Exception as e:
+            logger.warning(f"Ollama {'CoT' if use_cot else 'direct'} synthesis error: {e}.")
+            raise OllamaUnavailableError(
+                f"Ollama model '{settings.OLLAMA_MODEL}' at {settings.OLLAMA_URL} is unavailable or not responding: {e}"
+            ) from e
 
     if cot_steps is not None:
         cot_steps.append({
-            "phase": "Deterministic Insight Synthesis",
-            "thought": "Constructed verified Markdown synthesis directly from computed metrics and comparative deltas ✓",
+            "phase": "Strict Numerical Verification",
+            "thought": "Ollama output failed strict number traceability; returning exact computed dataset results only ✓",
         })
     return fallback_text
 
@@ -806,13 +857,18 @@ async def _explain_tool_result_with_gemma(
                 f"**{facts.get('total_projected_units', 0):,}** over the **{facts.get('horizon_periods', 28)}**-period horizon."
             )
     elif rows:
-        if len(headers) >= 2:
+        if len(rows) == 1 and len(headers) >= 2:
+            row_bullets = "\n".join(
+                f"• **{headers[i]}**: {rows[0][i]}"
+                for i in range(min(len(headers), len(rows[0])))
+            )
+        elif len(headers) >= 2:
             row_bullets = "\n".join(
                 "• **" + str(r[0]) + "**: " + ", ".join(f"{headers[i]} = {r[i]}" for i in range(1, min(len(headers), len(r), 5)))
-                for r in rows[:6]
+                for r in rows[:10]
             )
         else:
-            row_bullets = "\n".join(f"• **{r[0]}**" for r in rows[:6])
+            row_bullets = "\n".join(f"• **{r[0]}**" for r in rows[:10])
 
         # Add rich comparative takeaway from computed_insights when available
         insight_lines = []
@@ -855,6 +911,7 @@ async def _answer_product_query(
     dataset: Dataset,
     fc: ProductForecast,
     query: str,
+    use_cot: bool = True,
 ) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     pt = fc.point_forecast or []
     tot_units = int(round(sum(pt)))
@@ -899,6 +956,7 @@ async def _answer_reorder_query(
     dataset: Dataset,
     forecasts: List[ProductForecast],
     query: str,
+    use_cot: bool = True,
 ) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     reorders = []
     for f in forecasts:
@@ -941,6 +999,7 @@ async def _answer_risk_query(
     dataset: Dataset,
     forecasts: List[ProductForecast],
     query: str,
+    use_cot: bool = True,
 ) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     high_risks = []
     medium_risks = []
@@ -971,6 +1030,7 @@ async def _answer_model_query(
     dataset: Dataset,
     forecasts: List[ProductForecast],
     query: str,
+    use_cot: bool = True,
 ) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     model_counts: Dict[str, int] = {}
     for f in forecasts:
@@ -997,6 +1057,7 @@ async def _answer_health_query(
     dataset: Dataset,
     health: Dict[str, Any],
     query: str,
+    use_cot: bool = True,
 ) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     cleaned = health.get("total_rows_cleaned", 0)
     prods = health.get("total_products", 0)
@@ -1024,6 +1085,7 @@ async def _answer_general_query(
     health: Dict[str, Any],
     query: str,
     col_map: Optional[Dict[str, Any]] = None,
+    use_cot: bool = True,
 ) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     col_map = col_map or dataset.column_mapping or {}
     col_semantics = col_map.get("_column_semantics", {})
@@ -1060,9 +1122,12 @@ async def _answer_general_query(
 
     cot_steps = [
         {"phase": "Schema & Grain Inspection", "thought": f"Inspected {total_rows:,} rows × {len(col_semantics)} columns; grain: {row_grain.get('description', 'tabular')}."},
-    ]
+    ] if use_cot else None
     text = await _call_gemma_with_facts(query, facts, fallback, col_context=col_semantics, cot_steps=cot_steps)
-    return text, None, {"reasoning_steps": cot_steps}
+    payload_res: Dict[str, Any] = {}
+    if use_cot and cot_steps:
+        payload_res["reasoning_steps"] = cot_steps
+    return text, None, payload_res if payload_res else None
 
 
 async def _answer_schema_query(
@@ -1070,6 +1135,7 @@ async def _answer_schema_query(
     health: Dict[str, Any],
     query: str,
     col_map: Optional[Dict[str, Any]] = None,
+    use_cot: bool = True,
 ) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     """Explains what 100% of the rows and columns in the user's file represent, backed by real column profiles."""
     col_map = col_map or _ensure_enriched_mapping(dataset)
@@ -1100,9 +1166,12 @@ async def _answer_schema_query(
         fallback = f"**`{matched_col}`** — {matched_meaning} (non-null: {prof.get('non_null_count', 'N/A')}, unique values: {prof.get('unique_count', 'N/A')})."
         cot_steps = [
             {"phase": "Column Profile Lookup", "thought": f"Inspected statistical profile & role (`{prof.get('role', 'column')}`) for `{matched_col}`."},
-        ]
+        ] if use_cot else None
         text = await _call_gemma_with_facts(query, facts, fallback, cot_steps=cot_steps)
-        return text, "schema_explanation", {"columns": {matched_col: matched_meaning}, "row_grain": row_grain, "reasoning_steps": cot_steps}
+        schema_pl: Dict[str, Any] = {"columns": {matched_col: matched_meaning}, "row_grain": row_grain}
+        if use_cot and cot_steps:
+            schema_pl["reasoning_steps"] = cot_steps
+        return text, "schema_explanation", schema_pl
 
     total_rows = health.get("total_rows_raw") or dataset.row_count or 0
     grain_desc = row_grain.get("description") or f"Each of the {total_rows:,} rows represents a business record across {len(col_semantics)} columns."
@@ -1150,14 +1219,16 @@ async def _answer_schema_query(
 
     cot_steps = [
         {"phase": "Full Schema & Grain Profiling", "thought": f"Analyzed all {len(col_semantics)} columns and verified row structure ({grain_desc})."},
-    ]
+    ] if use_cot else None
     text = await _call_gemma_with_facts(query, facts, fallback, col_context=col_semantics, cot_steps=cot_steps)
-    return text, "schema_explanation", {
+    schema_full_pl: Dict[str, Any] = {
         "columns": col_semantics,
         "row_grain": row_grain,
         "dataset_type": health.get("dataset_type") or col_map.get("_dataset_type"),
-        "reasoning_steps": cot_steps,
     }
+    if use_cot and cot_steps:
+        schema_full_pl["reasoning_steps"] = cot_steps
+    return text, "schema_explanation", schema_full_pl
 
 
 async def _answer_financial_query(
@@ -1165,6 +1236,7 @@ async def _answer_financial_query(
     health: Dict[str, Any],
     col_semantics: Dict[str, str],
     query: str,
+    use_cot: bool = True,
 ) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     """Answers questions about profit, margin, revenue, cost, discount for any dataset.
     Extracts financial column info dynamically from col_semantics."""
@@ -1223,6 +1295,7 @@ async def _answer_top_movers_query(
     health: Dict[str, Any],
     forecasts: List[ProductForecast],
     query: str,
+    use_cot: bool = True,
 ) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     """Provides insights on the top selling brands / products."""
     top_moving = health.get("top_moving", [])
@@ -1258,6 +1331,7 @@ async def _answer_stock_health_query(
     dataset: Dataset,
     health: Dict[str, Any],
     query: str,
+    use_cot: bool = True,
 ) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     """Summarizes inventory health across out-of-stock, critical, healthy, and overstocked categories."""
     stock_health = health.get("stock_health", {})

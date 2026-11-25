@@ -31,6 +31,7 @@ def get_settings(db: Session = Depends(get_db)) -> SettingsResponse:
         )
     )
     horizon = int(_get_setting_or_default(db, "default_horizon", str(settings.DEFAULT_HORIZON)))
+    cot_enabled = _get_setting_or_default(db, "cot_enabled", "true").lower() in ("true", "1", "yes")
 
     license_warning = (
         "TimesFM 3.0 pretrained weights are licensed under the 'timesfm-non-commercial-license-v1.0' "
@@ -54,6 +55,7 @@ def get_settings(db: Session = Depends(get_db)) -> SettingsResponse:
         default_lead_time_days=lead_time,
         default_review_period_days=review_period,
         default_horizon=horizon,
+        cot_enabled=cot_enabled,
     )
 
 
@@ -87,6 +89,7 @@ def update_settings(
         if req.default_review_period_days is not None
         else None,
         "default_horizon": str(req.default_horizon) if req.default_horizon is not None else None,
+        "cot_enabled": str(req.cot_enabled).lower() if req.cot_enabled is not None else None,
     }
 
     for key, val in updates.items():

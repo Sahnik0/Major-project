@@ -17,6 +17,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [leadTime, setLeadTime] = useState(7);
   const [reviewPeriod, setReviewPeriod] = useState(7);
   const [serviceLevel, setServiceLevel] = useState(0.90);
+  const [cotEnabled, setCotEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState(false);
 
@@ -30,6 +31,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         setLeadTime(s.default_lead_time_days || 7);
         setReviewPeriod(s.default_review_period_days || 7);
         setServiceLevel(s.default_service_level || 0.90);
+        setCotEnabled(s.cot_enabled !== undefined ? s.cot_enabled : true);
       });
     }
   }, [isOpen]);
@@ -46,6 +48,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         default_lead_time_days: leadTime,
         default_review_period_days: reviewPeriod,
         default_service_level: serviceLevel,
+        cot_enabled: cotEnabled,
       });
       setSavedMsg(true);
       setTimeout(() => setSavedMsg(false), 2500);
@@ -149,6 +152,25 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                   className="w-full bg-[#1a1a1a] border border-[#383838] focus:border-[#555555] rounded-lg px-2.5 py-1.5 text-xs text-[#ececec] focus:outline-none transition font-mono"
                 />
               </div>
+            </div>
+
+            {/* Chain-of-Thought (CoT) Toggle */}
+            <div className="pt-2 border-t border-[#333333] flex items-center justify-between">
+              <div>
+                <span className="font-medium text-[#ececec]">Chain-of-Thought (CoT) Reasoning</span>
+                <p className="text-[#8e8e8e] text-[11px] mt-0.5">
+                  Allows the agent to plan multi-step reasoning before answering. Disable for faster, low-latency responses.
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer ml-4">
+                <input
+                  type="checkbox"
+                  checked={cotEnabled}
+                  onChange={(e) => setCotEnabled(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-[#383838] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
+              </label>
             </div>
           </div>
 

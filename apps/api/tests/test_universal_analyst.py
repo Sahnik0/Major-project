@@ -1,7 +1,10 @@
 import json
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
+import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.app.db import init_db
@@ -9,6 +12,81 @@ from apps.api.app.main import app
 
 init_db()
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def mock_ollama(monkeypatch):
+    """Mocks local Ollama responses so end-to-end CoT -> DuckDB/Polars -> verification runs deterministically."""
+    async def fake_post(self, url, **kwargs):
+        payload = kwargs.get("json") or {}
+        prompt = payload.get("prompt", "")
+        sys_p = payload.get("system", "")
+        resp = MagicMock()
+        resp.status_code = 200
+
+        if "Generate Chain-of-Thought JSON plan" in prompt or "Select tool:" in prompt:
+            q_low = prompt.lower()
+            if "future prediction" in q_low or "predict future" in q_low:
+                metric = "temperature_c" if "temperature_c" in prompt else "MA"
+                f_col = "sensor_zone" if "Turbine_North" in prompt else None
+                f_val = "Turbine_North" if "Turbine_North" in prompt else None
+                body = {
+                    "reasoning_steps": ["Step 1: Forecast future trend", f"Step 2: Run forecast_future on {metric}"],
+                    "tool": "forecast_future",
+                    "arguments": {"target_metric": metric, "horizon": None, "filter_column": f_col, "filter_value": f_val},
+                    "secondary_sql": None,
+                }
+            elif "generate a csv" in q_low:
+                body = {
+                    "reasoning_steps": ["Step 1: Export aggregated CSV by type"],
+                    "tool": "generate_csv_export",
+                    "arguments": {
+                        "sql": 'SELECT "type", ROUND(AVG("MA"), 2) AS avg_ma FROM data GROUP BY "type" ORDER BY avg_ma DESC',
+                        "filename_slug": "avg_ma_by_type",
+                        "include_forecasts": False,
+                        "description": "Average MA by type",
+                    },
+                    "secondary_sql": None,
+                }
+            elif "correlation" in q_low:
+                body = {
+                    "reasoning_steps": ["Step 1: Analyze correlations across all numeric columns"],
+                    "tool": "analyze_correlations",
+                    "arguments": {"target_column": "ARR"},
+                    "secondary_sql": None,
+                }
+            elif "anomalies" in q_low or "outliers" in q_low:
+                body = {
+                    "reasoning_steps": ["Step 1: Detect outliers in ARR across entire dataset"],
+                    "tool": "detect_anomalies",
+                    "arguments": {"column": "ARR", "limit": 10},
+                    "secondary_sql": None,
+                }
+            elif "annual_salary" in q_low:
+                body = {
+                    "reasoning_steps": ["Step 1: Filter Experience_Years > 4", "Step 2: Group by Team"],
+                    "tool": "run_sql_query",
+                    "arguments": {
+                        "sql": 'SELECT "Team", ROUND(AVG("Annual_Salary"), 2) AS avg_salary FROM data WHERE "Experience_Years" > 4 GROUP BY "Team" ORDER BY avg_salary DESC',
+                        "title": "Average Annual_Salary by Team (Experience_Years > 4)",
+                    },
+                    "secondary_sql": None,
+                }
+            else:
+                body = {"reasoning_steps": ["Step 1: Direct SQL"], "tool": None, "arguments": {}, "secondary_sql": None}
+            resp.json.return_value = {"response": json.dumps(body)}
+        elif "answer_markdown" in sys_p:
+            resp.json.return_value = {
+                "response": json.dumps({
+                    "synthesis_thought": "Verified all results against calculated dataset facts.",
+                    "answer_markdown": "Analysis computed directly across the full dataset.",
+                })
+            }
+        else:
+            resp.json.return_value = {"response": "Analysis computed directly across the full dataset."}
+        return resp
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
 
 
 def _wait_for_job(job_id: str, timeout_s: float = 15.0) -> dict:

@@ -17,6 +17,7 @@ class SettingsResponse(BaseModel):
     default_lead_time_days: int
     default_review_period_days: int
     default_horizon: int
+    cot_enabled: bool = True
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -31,3 +32,4 @@ class SettingsUpdateRequest(BaseModel):
     default_lead_time_days: Optional[int] = None
     default_review_period_days: Optional[int] = None
     default_horizon: Optional[int] = None
+    cot_enabled: Optional[bool] = None

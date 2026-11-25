@@ -249,8 +249,10 @@ def _sanitize_raw_dataframe(df: pl.DataFrame) -> pl.DataFrame:
         return df
 
     # 3. Coerce formatted numeric strings (e.g. "$1,250.50", "₹45,000", "(120.5)", "18.5%")
+    # Also gracefully treat null placeholder tokens ("-", "NA", "N/A", etc.) as null when checking numeric columns
     cast_exprs = []
     id_like_kw = ("id", "code", "sku", "barcode", "zip", "postal", "phone", "mobile", "gst", "hsn", "account")
+    null_placeholders = {t.lower() for t in NULL_TOKENS} | {"--", "n.a."}
     for col in df.columns:
         if df[col].dtype not in (pl.Utf8, pl.String):
             continue
@@ -260,21 +262,30 @@ def _sanitize_raw_dataframe(df: pl.DataFrame) -> pl.DataFrame:
         non_null = df[col].drop_nulls()
         if len(non_null) == 0:
             continue
-        sample = non_null.head(200).to_list()
-        # Skip if values have leading zeros like "00123" (likely identifier/code)
-        if any(isinstance(v, str) and len(v.strip()) > 1 and v.strip().startswith("0") and v.strip()[1:2].isdigit() for v in sample):
+        raw_sample = non_null.head(1000).to_list()
+        sample = [
+            v for v in raw_sample
+            if isinstance(v, str) and v.strip().lower() not in null_placeholders
+        ]
+        if not sample:
             continue
-        # Only coerce when there is actually formatting ($/₹/,/%/parentheses) or plain numbers stored as strings
-        matched = sum(1 for v in sample if isinstance(v, str) and bool(_CURRENCY_NUM_RE.match(v)))
+        # Skip if values have leading zeros like "00123" (likely identifier/code)
+        if any(len(v.strip()) > 1 and v.strip().startswith("0") and v.strip()[1:2].isdigit() for v in sample):
+            continue
+        # Coerce when >=90% of non-placeholder values are formatted numbers
+        matched = sum(1 for v in sample if bool(_CURRENCY_NUM_RE.match(v)))
         if matched / len(sample) >= 0.90:
-            # Verify it's not a date column like "20230101" only if needed; plain numbers or currency convert cleanly
             cleaned_expr = (
-                pl.col(col)
-                .str.strip_chars()
-                .str.replace_all(r"^\((.*)\)$", "-$1")
-                .str.replace_all(r"[$€£₹¥,%]", "")
-                .str.replace_all(r"(?i)\b(?:USD|INR|EUR|GBP|Rs\.?)\b", "")
-                .str.strip_chars()
+                pl.when(pl.col(col).str.strip_chars().str.to_lowercase().is_in(list(null_placeholders)))
+                .then(None)
+                .otherwise(
+                    pl.col(col)
+                    .str.strip_chars()
+                    .str.replace_all(r"^\((.*)\)$", "-$1")
+                    .str.replace_all(r"[$€£₹¥,%]", "")
+                    .str.replace_all(r"(?i)\b(?:USD|INR|EUR|GBP|Rs\.?)\b", "")
+                    .str.strip_chars()
+                )
                 .cast(pl.Float64, strict=False)
                 .alias(col)
             )
@@ -292,11 +303,11 @@ def _read_json_dataframe(file_path: Path) -> pl.DataFrame:
         payload = json.load(f)
 
     if isinstance(payload, list):
-        return pl.from_dicts(payload, infer_schema_length=1000) if payload else pl.DataFrame()
+        return pl.from_dicts(payload, infer_schema_length=10000) if payload else pl.DataFrame()
     if isinstance(payload, dict):
         for key in ("data", "records", "rows", "items", "results"):
             if key in payload and isinstance(payload[key], list):
-                return pl.from_dicts(payload[key], infer_schema_length=1000) if payload[key] else pl.DataFrame()
+                return pl.from_dicts(payload[key], infer_schema_length=10000) if payload[key] else pl.DataFrame()
         # Check if dict of equal-length lists (column-oriented JSON)
         if payload and all(isinstance(v, list) for v in payload.values()):
             return pl.DataFrame(payload)
@@ -320,7 +331,7 @@ def read_raw_dataframe(file_path: Path) -> pl.DataFrame:
                 encoding=encoding,
                 skip_rows=header_idx,
                 ignore_errors=True,
-                infer_schema_length=2000,
+                infer_schema_length=100000,
                 try_parse_dates=False,
                 null_values=NULL_TOKENS,
             )
@@ -331,7 +342,7 @@ def read_raw_dataframe(file_path: Path) -> pl.DataFrame:
                 encoding="utf-8",
                 skip_rows=header_idx,
                 ignore_errors=True,
-                infer_schema_length=2000,
+                infer_schema_length=100000,
                 try_parse_dates=False,
                 null_values=NULL_TOKENS,
             )
@@ -366,7 +377,7 @@ def read_raw_dataframe(file_path: Path) -> pl.DataFrame:
             )
 
     elif suffix in [".jsonl", ".ndjson"]:
-        df = pl.read_ndjson(file_path, infer_schema_length=2000)
+        df = pl.read_ndjson(file_path, infer_schema_length=100000)
         return _sanitize_raw_dataframe(df)
 
     elif suffix == ".parquet":

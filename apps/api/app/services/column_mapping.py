@@ -468,6 +468,12 @@ def explain_columns(columns: List[str], df: Optional[pl.DataFrame] = None) -> Di
                     explanations[c] = f"Unique/high-cardinality identifier column ({u_cnt:,} unique values{examples})"
                 else:
                     explanations[c] = f"Categorical / text dimension ({u_cnt:,} unique values{examples})"
+            elif role == "empty":
+                explanations[c] = (
+                    f"{base_desc} (EMPTY: 0 non-null values in file)"
+                    if base_desc
+                    else f"Empty column '{c}' (0 non-null values in file)"
+                )
             else:
                 explanations[c] = base_desc or f"Business data column '{c}'"
         else:
@@ -607,7 +613,11 @@ def build_column_profiles(df: pl.DataFrame) -> Dict[str, Dict[str, Any]]:
         is_temp = dtype in (pl.Date, pl.Datetime)
         date_rate = 1.0 if is_temp else (check_date_parse_rate(df, col) if not is_num and not is_bool else 0.0)
 
-        if is_temp or date_rate >= 0.75:
+        if non_null_cnt == 0:
+            prof["role"] = "empty"
+            prof["top_values"] = []
+            prof["sample_values"] = []
+        elif is_temp or date_rate >= 0.75:
             prof["role"] = "temporal"
             try:
                 if is_temp:
@@ -917,6 +927,8 @@ def suggest_column_mapping_heuristics(
             norm = norm_col_map[col]
             prof = profiles.get(col, {})
             role = prof.get("role", "")
+            if role == "empty" or prof.get("non_null_count", 0) == 0:
+                continue
             is_numeric = df[col].dtype in NUMERIC_DTYPES
 
             for field, cfg in LOGICAL_FIELDS.items():

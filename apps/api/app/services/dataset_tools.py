@@ -25,6 +25,10 @@ from apps.api.app.services.ingestion import read_raw_dataframe
 
 logger = logging.getLogger("advisor.tools")
 
+
+class OllamaUnavailableError(RuntimeError):
+    """Raised when the configured Ollama service or model is unreachable or fails to respond."""
+
 # In-memory LRU-like cache for dataset DataFrames: {dataset_id: (timestamp, df)}
 _DF_CACHE: Dict[str, Tuple[float, pl.DataFrame]] = {}
 _DUCK_DF_CACHE: Dict[str, Tuple[float, pl.DataFrame]] = {}
@@ -337,26 +341,45 @@ def discover_query_context(
                 if resolved and resolved not in mentioned_measures and resolved not in mentioned_dimensions:
                     mentioned_measures.append(resolved)
 
-    # Scan actual distinct categorical values in df (up to 400 unique values per column) to find entity filters!
+    # Scan ALL distinct categorical values across ALL string columns (regardless of cardinality)
+    stop_words = {"in", "on", "to", "by", "or", "is", "no", "na", "all", "top", "the", "and", "for", "of", "with", "from", "total", "sum", "avg", "average", "sales", "profit", "brand", "show", "give", "what", "which", "how", "many", "much"}
+    q_words = [w for w in re.findall(r"[a-z0-9][a-z0-9\-/]*", q_low) if len(w) >= 3 and w not in stop_words]
     matched_value_filters: List[Dict[str, Any]] = []
     for col in df.columns:
         if df[col].dtype in (pl.Utf8, pl.String, pl.Categorical):
-            n_u = int(df[col].drop_nulls().n_unique())
-            if 1 <= n_u <= 400:
-                vals = df[col].drop_nulls().unique().to_list()
-                # Sort longer strings first so 'CASUAL SHIRT F/S' matches before 'SHIRT'
-                vals_sorted = sorted((str(v).strip() for v in vals if str(v).strip()), key=len, reverse=True)
-                col_hits = []
-                for v_str in vals_sorted:
-                    if len(v_str) >= 2 and re.search(rf"(?:^|\b){re.escape(v_str.lower())}(?:\b|$)", q_low):
-                        # Avoid matching generic English stop words
-                        if v_str.lower() in {"in", "on", "to", "by", "or", "is", "no", "na", "all", "top", "the", "and", "for"}:
+            vals = df[col].drop_nulls().unique().to_list()
+            if not vals:
+                continue
+            vals_sorted = sorted((str(v).strip() for v in vals if str(v).strip()), key=len, reverse=True)
+            col_hits: List[str] = []
+            seen_hits = set()
+            # Pass 1: exact value mentioned in query
+            for v_str in vals_sorted:
+                v_low = v_str.lower()
+                if len(v_low) >= 2 and v_low not in stop_words and v_low in q_low:
+                    if re.search(rf"(?:^|\b){re.escape(v_low)}(?:\b|$)", q_low):
+                        if v_str not in seen_hits:
+                            seen_hits.add(v_str)
+                            col_hits.append(v_str)
+                            if len(col_hits) >= 25:
+                                break
+            # Pass 2: if a query keyword is a whole-word component of dataset values (e.g. 'pepe' -> 'PEPE', 'PEPE-KIDS')
+            if q_words and len(col_hits) < 25:
+                for qw in q_words:
+                    qw_re = re.compile(rf"(?:^|\b){re.escape(qw)}(?:\b|$)")
+                    for v_str in vals_sorted:
+                        if v_str in seen_hits:
                             continue
-                        col_hits.append(v_str)
-                        if len(col_hits) >= 4:
-                            break
-                if col_hits:
-                    matched_value_filters.append({"column": col, "values": col_hits})
+                        v_low = v_str.lower()
+                        if qw in v_low and qw_re.search(v_low):
+                            seen_hits.add(v_str)
+                            col_hits.append(v_str)
+                            if len(col_hits) >= 25:
+                                break
+                    if len(col_hits) >= 25:
+                        break
+            if col_hits:
+                matched_value_filters.append({"column": col, "values": col_hits})
 
     # Detect numeric attribute equality like "3 bedrooms" or "bedrooms = 3"
     numeric_predicates: List[str] = []
@@ -473,7 +496,7 @@ def build_dynamic_sql_from_query(
 
     ascending = any(w in q_low for w in ("bottom", "lowest", "worst", "least", "smallest", "ascending"))
     m_lim = re.search(r"\b(?:top|bottom|first|last|limit)\s+(\d+)\b", q_low)
-    limit_n = min(int(m_lim.group(1)), 50) if m_lim else 15
+    limit_sql = f" LIMIT {min(int(m_lim.group(1)), 200)}" if m_lim else ""
 
     where_sql = f" WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
@@ -506,7 +529,7 @@ def build_dynamic_sql_from_query(
             order_col = f'"{first_fn.lower()}_{normalize_col_token(primary_m)}"'
 
         order_sql = f'"{time_alias}" ASC' if (time_expr and not any(w in q_low for w in ("top ", "bottom ", "highest", "lowest"))) else f"{order_col} {'ASC' if ascending else 'DESC'}"
-        sql = f"SELECT {', '.join(select_dims + agg_cols)} FROM data{where_sql} GROUP BY {', '.join(group_refs)} ORDER BY {order_sql} LIMIT {limit_n}"
+        sql = f"SELECT {', '.join(select_dims + agg_cols)} FROM data{where_sql} GROUP BY {', '.join(group_refs)} ORDER BY {order_sql}{limit_sql}"
         title = f"Dynamic Analysis: {', '.join(group_dims or [time_alias or 'Group'])}"
         return sql, title
 
@@ -654,9 +677,9 @@ def execute_rank_top_bottom(
     if not metric_col:
         return {"error": f"Could not find numeric metric column matching '{metric}'"}
 
-    n = max(1, min(int(n or 5), 15))
+    n = max(1, min(int(n or 5), 100))
 
-    # Clean and aggregate
+    # Clean and aggregate across ALL rows
     work = df.filter(
         pl.col(dim_col).is_not_null()
         & (pl.col(dim_col).cast(pl.Utf8).str.strip_chars() != "")
@@ -670,7 +693,7 @@ def execute_rank_top_bottom(
         else pl.col(metric_col).fill_null(0.0).cast(pl.Float64).sum().alias("metric_value")
     )
 
-    grouped = (
+    grouped_all = (
         work.group_by(dim_col)
         .agg([
             agg_expr,
@@ -678,8 +701,10 @@ def execute_rank_top_bottom(
         ])
         .filter(pl.col("metric_value").is_not_null())
         .sort("metric_value", descending=not ascending)
-        .head(n)
     )
+    total_entities = len(grouped_all)
+    grand_total = round(float(grouped_all["metric_value"].sum()), 2) if (total_entities > 0 and not use_mean) else None
+    grouped = grouped_all.head(n)
 
     results = []
     chart_data = []
@@ -702,18 +727,22 @@ def execute_rank_top_bottom(
 
     direction = "Lowest (Bottom)" if ascending else "Highest (Top)"
     agg_prefix = "Avg " if use_mean else ""
-    title = f"{direction} {len(results)} {dim_col} by {agg_prefix}{metric_col}"
+    title = f"{direction} {len(results)} {dim_col} by {agg_prefix}{metric_col} (out of {total_entities:,})"
 
-    computed_insights = _compute_table_insights(grouped.select([dim_col, "metric_value"]))
+    computed_insights = _compute_table_insights(grouped_all.select([dim_col, "metric_value"]))
 
     facts: Dict[str, Any] = {
         "ranking_direction": "bottom" if ascending else "top",
         "aggregation": "mean" if use_mean else "sum",
         "dimension": dim_col,
         "metric": metric_col,
-        "count": len(results),
+        "total_rows_evaluated": len(df),
+        "total_entities": total_entities,
+        "count_displayed": len(results),
         "results": results,
     }
+    if grand_total is not None:
+        facts["grand_total_across_all_entities"] = grand_total
     if computed_insights:
         facts["computed_insights"] = computed_insights
 
@@ -783,25 +812,34 @@ def execute_filter_and_aggregate(
                     )
                 )
             )
-            grp_res = (
+            grp_all = (
                 filtered_df.filter(pl.col(grp_col).is_not_null())
                 .group_by(grp_col)
                 .agg(agg_expr)
                 .sort("val", descending=True)
-                .head(10)
             )
+            total_groups = len(grp_all)
+            grand_total = round(float(grp_all["val"].sum()), 2) if (total_groups > 0 and agg_func_clean == "sum") else None
+            grp_res = grp_all.head(200)
             rows = [[str(r[grp_col]), f"{round(float(r['val']), 2):,}" ] for r in grp_res.to_dicts()]
-            chart_data = [{"name": str(r[grp_col]), "value": round(float(r["val"]), 2)} for r in grp_res.to_dicts()]
-            facts = {
+            chart_data = [{"name": str(r[grp_col]), "value": round(float(r["val"]), 2)} for r in grp_res.head(25).to_dicts()]
+            facts: Dict[str, Any] = {
                 "metric": metric_col,
                 "operation": agg_func_clean,
                 "filter": applied_filter_desc,
                 "group_by": grp_col,
-                "items": [{"group": r[0], "value": r[1]} for r in rows],
+                "total_rows_evaluated": len(filtered_df),
+                "total_groups": total_groups,
+                "items": [{"group": r[0], "value": r[1]} for r in rows[:100]],
             }
+            if grand_total is not None:
+                facts["grand_total"] = grand_total
+            comp = _compute_table_insights(grp_all.rename({"val": metric_col}))
+            if comp:
+                facts["computed_insights"] = comp
             return {
                 "tool_name": "filter_and_aggregate",
-                "title": f"{agg_func_clean.upper()} of {metric_col} by {grp_col} ({applied_filter_desc})",
+                "title": f"{agg_func_clean.upper()} of {metric_col} by {grp_col} ({applied_filter_desc}, {total_groups:,} groups)",
                 "table_headers": [grp_col, f"{agg_func_clean.capitalize()} {metric_col}"],
                 "table_rows": rows,
                 "chart_data": chart_data,
@@ -904,13 +942,16 @@ def execute_column_distribution_stats(
             .group_by(col_name)
             .len()
             .sort("len", descending=True)
-            .head(6)
+            .head(25)
         )
         unique_cnt = int(series.n_unique())
+        non_null_cnt = int(series.drop_nulls().len())
         top_list = [{"name": str(r[col_name]), "count": int(r["len"])} for r in top_cats.to_dicts()]
         facts = {
             "column": col_name,
             "type": "categorical",
+            "total_rows": len(df),
+            "non_null_count": non_null_cnt,
             "unique_values_count": unique_cnt,
             "top_categories": top_list,
         }
@@ -1188,19 +1229,28 @@ def _repair_sql_with_gemma(
     error_msg: str,
     df: pl.DataFrame,
     user_query: str,
+    col_semantics: Optional[Dict[str, str]] = None,
+    col_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Optional[str]:
-    schema_desc = ", ".join(f'"{c}" ({df[c].dtype})' for c in df.columns)
+    schema_block = _build_schema_context_for_agent(
+        list(df.columns), col_semantics or {}, col_profiles, df=df
+    )
     prompt = (
-        f"Fix this DuckDB SELECT query on table `data`.\n"
+        f"Fix this DuckDB SELECT query on table `data` (containing all {len(df):,} rows).\n"
         f"User question: {user_query}\n"
-        f"Exact columns in `data`: {schema_desc}\n"
+        f"Live schema of `data`:\n{schema_block}\n\n"
         f"Failed SQL: {failed_sql}\n"
         f"DuckDB Error: {error_msg}\n\n"
-        f"Rules: Always wrap column names in double quotes like \"Column Name\". "
-        f"Return JSON: {{\"sql\": \"SELECT ... FROM data ...\"}}"
+        "REPAIR RULES:\n"
+        "- Always wrap column names in double quotes like \"Column Name\".\n"
+        "- NEVER aggregate an EMPTY (0 non-null) column. If a column is EMPTY, switch to the closest POPULATED NUMERIC column.\n"
+        "- If a column is String/VARCHAR containing numeric text, wrap with TRY_CAST(REGEXP_REPLACE(CAST(\"col\" AS VARCHAR), '[^0-9.-]', '', 'g') AS DOUBLE).\n"
+        "- For dates in DuckDB: NEVER pass 2 args to DATE(). NEVER compare a DATE column directly to integer years (e.g. \"date_col\" BETWEEN 2024 AND 2026 is INVALID!). Use EXTRACT(YEAR FROM \"date_col\") BETWEEN 2024 AND 2026, DATE_TRUNC('year', \"date_col\"), or \"date_col\" >= (SELECT MAX(\"date_col\") FROM data) - INTERVAL '3 years'.\n"
+        "- Perform the calculation over the ENTIRE `data` table without arbitrary LIMITs.\n"
+        "Return JSON: {\"sql\": \"SELECT ... FROM data ...\"}"
     )
     try:
-        with httpx.Client(timeout=8.0) as client:
+        with httpx.Client(timeout=30.0) as client:
             resp = client.post(
                 f"{settings.OLLAMA_URL}/api/generate",
                 json={
@@ -1211,12 +1261,18 @@ def _repair_sql_with_gemma(
                     "options": {"temperature": 0.0},
                 },
             )
-            if resp.status_code == 200:
-                parsed = json.loads(resp.json().get("response", "{}"))
-                return parsed.get("sql")
-    except Exception:
-        pass
-    return None
+            if resp.status_code != 200:
+                raise OllamaUnavailableError(
+                    f"Ollama model '{settings.OLLAMA_MODEL}' returned HTTP {resp.status_code} during SQL repair."
+                )
+            parsed = json.loads(resp.json().get("response", "{}"))
+            return parsed.get("sql")
+    except OllamaUnavailableError:
+        raise
+    except Exception as exc:
+        raise OllamaUnavailableError(
+            f"Ollama model '{settings.OLLAMA_MODEL}' at {settings.OLLAMA_URL} is unavailable or not responding: {exc}"
+        ) from exc
 
 
 def _compute_table_insights(df_res: pl.DataFrame) -> Dict[str, Any]:
@@ -1291,49 +1347,47 @@ def execute_sql_query_tool(
     executed_sql = sql
     reflection_notes: List[str] = []
 
-    try:
-        res_df = run_duckdb_df(duck_df, executed_sql)
-    except Exception as e1:
-        reflection_notes.append(f"Initial SQL hit DuckDB error ({str(e1)[:90]}); auto-repaired column/type syntax.")
-        repaired = _repair_sql_with_gemma(executed_sql, str(e1), duck_df, user_query)
-        if repaired:
-            try:
-                executed_sql = repaired
-                res_df = run_duckdb_df(duck_df, executed_sql)
-            except Exception as e2:
-                # Try deterministic dynamic SQL builder before giving up!
-                col_map = dataset.column_mapping or {}
-                dyn = build_dynamic_sql_from_query(
-                    user_query,
-                    duck_df,
-                    col_profiles=col_map.get("_column_profiles"),
-                    col_semantics=col_map.get("_column_semantics"),
+    col_map = dataset.column_mapping or {}
+    col_semantics = col_map.get("_column_semantics", {})
+    col_profiles = col_map.get("_column_profiles", {})
+
+    res_df = None
+    last_err: Optional[Exception] = None
+    empty_col_names = [c for c in duck_df.columns if duck_df[c].null_count() == len(duck_df)]
+    for attempt in range(3):
+        try:
+            res_df = run_duckdb_df(duck_df, executed_sql)
+            # Self-reflection check: did SQL reference a 100%-empty column (returning all-null metric)?
+            referenced_empty = [c for c in empty_col_names if f'"{c}"' in executed_sql]
+            if referenced_empty and attempt < 2:
+                err_hint = (
+                    f"Referenced 100%-empty (0 non-null) column(s) {referenced_empty}, which returned NULLs. "
+                    "Replace them with populated numeric columns from the schema."
                 )
-                if dyn:
-                    executed_sql, dyn_title = dyn
-                    title = title or dyn_title
-                    res_df = run_duckdb_df(duck_df, executed_sql)
-                    reflection_notes.append("Recovered via deterministic schema-grounded SQL synthesis.")
-                else:
-                    return {"error": f"SQL query failed: {e2}"}
-        else:
-            col_map = dataset.column_mapping or {}
-            dyn = build_dynamic_sql_from_query(
-                user_query,
-                duck_df,
-                col_profiles=col_map.get("_column_profiles"),
-                col_semantics=col_map.get("_column_semantics"),
+                reflection_notes.append(err_hint)
+                repaired = _repair_sql_with_gemma(
+                    executed_sql, err_hint, duck_df, user_query,
+                    col_semantics=col_semantics, col_profiles=col_profiles,
+                )
+                if repaired and isinstance(repaired, str) and repaired.strip():
+                    executed_sql = repaired
+                    continue
+            break
+        except Exception as exc:
+            last_err = exc
+            if attempt >= 2:
+                return {"error": f"SQL query failed: {exc}"}
+            reflection_notes.append(f"Initial SQL hit DuckDB error ({str(exc)[:90]}); auto-repaired column/type syntax.")
+            repaired = _repair_sql_with_gemma(
+                executed_sql, str(exc), duck_df, user_query,
+                col_semantics=col_semantics, col_profiles=col_profiles,
             )
-            if dyn:
-                executed_sql, dyn_title = dyn
-                title = title or dyn_title
-                try:
-                    res_df = run_duckdb_df(duck_df, executed_sql)
-                    reflection_notes.append("Recovered via deterministic schema-grounded SQL synthesis.")
-                except Exception as e3:
-                    return {"error": f"SQL query failed: {e3}"}
-            else:
-                return {"error": f"SQL query failed: {e1}"}
+            if not repaired or not isinstance(repaired, str) or not repaired.strip():
+                return {"error": f"SQL query failed: {exc}"}
+            executed_sql = repaired
+
+    if res_df is None:
+        return {"error": f"SQL query failed: {last_err}"}
 
     # Self-reflection Check: If strict string equality filter returned 0 rows, relax to ILIKE '%...%'!
     if len(res_df) == 0 and "where" in executed_sql.lower():
@@ -1351,16 +1405,16 @@ def execute_sql_query_tool(
                 pass
 
     total_rows = len(res_df)
-    display_df = res_df.head(50)
+    display_df = res_df.head(200)
     headers = list(display_df.columns)
     rows = [[_format_cell(r.get(c)) for c in headers] for r in display_df.to_dicts()]
 
     chart_data = []
-    if 2 <= len(display_df) <= 20 and len(headers) >= 2:
-        num_cols = [c for c in headers[1:] if display_df[c].dtype in NUMERIC_DTYPES]
+    if 2 <= len(res_df) <= 50 and len(headers) >= 2:
+        num_cols = [c for c in headers[1:] if res_df[c].dtype in NUMERIC_DTYPES]
         if num_cols:
             val_col = num_cols[0]
-            for r in display_df.head(15).to_dicts():
+            for r in res_df.head(25).to_dicts():
                 v = r.get(val_col)
                 if isinstance(v, (int, float)) and not np.isnan(float(v)):
                     chart_data.append({
@@ -1369,7 +1423,7 @@ def execute_sql_query_tool(
                     })
 
     fact_records = []
-    for r in display_df.head(15).to_dicts():
+    for r in res_df.head(100).to_dicts():
         clean_r = {}
         for k, v in r.items():
             if isinstance(v, float) and not np.isnan(v):
@@ -1378,14 +1432,31 @@ def execute_sql_query_tool(
                 clean_r[k] = str(v) if not isinstance(v, (int, float, bool)) else v
         fact_records.append(clean_r)
 
-    computed_insights = _compute_table_insights(display_df)
+    # Compute comparative insights & grand totals over the ENTIRE result set (not a truncated slice!)
+    computed_insights = _compute_table_insights(res_df)
+    full_result_summary: Dict[str, Any] = {}
+    if total_rows > 1:
+        for col_c in headers:
+            if res_df[col_c].dtype in NUMERIC_DTYPES:
+                s_col = res_df[col_c].drop_nulls().cast(pl.Float64)
+                if len(s_col) > 0:
+                    full_result_summary[col_c] = {
+                        "sum": round(float(s_col.sum()), 2),
+                        "avg": round(float(s_col.mean()), 2),
+                        "min": round(float(s_col.min()), 2),
+                        "max": round(float(s_col.max()), 2),
+                        "count": int(len(s_col)),
+                    }
 
     facts: Dict[str, Any] = {
         "sql_executed": validate_readonly_sql(executed_sql),
+        "source_dataset_total_rows": len(duck_df),
         "total_rows_returned": total_rows,
         "columns": headers,
         "results": fact_records,
     }
+    if full_result_summary:
+        facts["full_result_summary"] = full_result_summary
     if computed_insights:
         facts["computed_insights"] = computed_insights
     if reflection_notes:
@@ -1706,16 +1777,16 @@ def _generate_sql_for_csv_with_gemma(
     schema_desc = ", ".join(f'"{c}" ({df[c].dtype})' for c in df.columns)
     sample_json = json.dumps(df.head(2).to_dicts(), default=str)
     prompt = (
-        "You are an expert DuckDB SQL engineer generating a new CSV dataset from table `data` based on the user's request.\n"
+        f"You are an expert DuckDB SQL engineer generating a new CSV dataset from table `data` (containing all {len(df):,} rows) based on the user's request.\n"
         f"Exact columns in `data`: {schema_desc}\n"
-        f"Sample rows: {sample_json}\n"
+        f"Sample rows (schema illustration only — your SQL runs on all {len(df):,} rows): {sample_json}\n"
         f"User request: \"{user_query}\"\n\n"
-        "Write a single read-only DuckDB SELECT query against `data` that produces the exact table the user wants exported. "
+        "Write a single read-only DuckDB SELECT query against `data` that produces the exact table the user wants exported across the ENTIRE dataset. "
         "Always wrap column names in double quotes (e.g. \"Sale Qty\"). Do NOT add a tiny LIMIT unless the user asked for top N.\n"
         "Respond ONLY in JSON: {\"sql\": \"SELECT ... FROM data ...\", \"filename_slug\": \"descriptive_name\"}"
     )
     try:
-        with httpx.Client(timeout=10.0) as client:
+        with httpx.Client(timeout=45.0) as client:
             resp = client.post(
                 f"{settings.OLLAMA_URL}/api/generate",
                 json={
@@ -1726,12 +1797,18 @@ def _generate_sql_for_csv_with_gemma(
                     "options": {"temperature": 0.0},
                 },
             )
-            if resp.status_code == 200:
-                parsed = json.loads(resp.json().get("response", "{}"))
-                return parsed.get("sql"), parsed.get("filename_slug") or "generated_export"
-    except Exception:
-        pass
-    return None, "generated_export"
+            if resp.status_code != 200:
+                raise OllamaUnavailableError(
+                    f"Ollama model '{settings.OLLAMA_MODEL}' returned HTTP {resp.status_code} during CSV SQL generation."
+                )
+            parsed = json.loads(resp.json().get("response", "{}"))
+            return parsed.get("sql"), parsed.get("filename_slug") or "generated_export"
+    except OllamaUnavailableError:
+        raise
+    except Exception as exc:
+        raise OllamaUnavailableError(
+            f"Ollama model '{settings.OLLAMA_MODEL}' at {settings.OLLAMA_URL} is unavailable or not responding: {exc}"
+        ) from exc
 
 
 def _heuristic_export_sql(user_query: str, df: pl.DataFrame, col_semantics: Dict[str, str]) -> str:
@@ -1886,16 +1963,15 @@ def execute_analyze_correlations(
                 if not np.isnan(r_val):
                     pairs.append({"col_a": target, "col_b": other, "correlation": round(r_val, 4)})
     else:
-        capped = num_cols[:15]
-        for i in range(len(capped)):
-            a_arr = df[capped[i]].cast(pl.Float64).to_numpy()
-            for j in range(i + 1, len(capped)):
-                b_arr = df[capped[j]].cast(pl.Float64).to_numpy()
+        for i in range(len(num_cols)):
+            a_arr = df[num_cols[i]].cast(pl.Float64).to_numpy()
+            for j in range(i + 1, len(num_cols)):
+                b_arr = df[num_cols[j]].cast(pl.Float64).to_numpy()
                 mask = ~np.isnan(a_arr) & ~np.isnan(b_arr)
                 if np.sum(mask) >= 3 and np.std(a_arr[mask]) > 0 and np.std(b_arr[mask]) > 0:
                     r_val = float(np.corrcoef(a_arr[mask], b_arr[mask])[0, 1])
                     if not np.isnan(r_val):
-                        pairs.append({"col_a": capped[i], "col_b": capped[j], "correlation": round(r_val, 4)})
+                        pairs.append({"col_a": num_cols[i], "col_b": num_cols[j], "correlation": round(r_val, 4)})
 
     pairs.sort(key=lambda x: abs(x["correlation"]), reverse=True)
     top_pairs = pairs[:10]
@@ -2129,22 +2205,64 @@ def _build_schema_context_for_agent(
     available_columns: List[str],
     col_semantics: Dict[str, str],
     col_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+    df: Optional[pl.DataFrame] = None,
 ) -> str:
     lines = []
-    for c in available_columns[:60]:
+    empty_cols = []
+    total_len = len(df) if df is not None else None
+    for c in available_columns:
         prof = (col_profiles or {}).get(c, {})
-        dtype = prof.get("polars_dtype") or prof.get("role") or "unknown"
+        if df is not None and c in df.columns:
+            s = df[c]
+            dtype = str(s.dtype)
+            non_null = int(total_len - s.null_count()) if total_len is not None else prof.get("non_null_count", 0)
+            is_num_dtype = s.dtype in NUMERIC_DTYPES
+            is_date_dtype = s.dtype in (pl.Date, pl.Datetime)
+        else:
+            dtype = prof.get("polars_dtype") or prof.get("role") or "unknown"
+            non_null = prof.get("non_null_count")
+            is_num_dtype = dtype.startswith(("Int", "UInt", "Float"))
+            is_date_dtype = dtype in ("Date", "Datetime")
+
         role = prof.get("role", "")
-        if role == "temporal":
-            detail = f"Date ({prof.get('date_min')}..{prof.get('date_max')}, {prof.get('frequency')})"
-        elif role in ("numeric_measure", "numeric_attribute"):
-            detail = f"{dtype} [min={prof.get('min')}, max={prof.get('max')}, avg={prof.get('mean')}]"
+        if non_null == 0 or role == "empty":
+            empty_cols.append(f'"{c}"')
+            continue
+        elif is_date_dtype or role == "temporal":
+            d_min = prof.get("date_min")
+            d_max = prof.get("date_max")
+            if df is not None and c in df.columns and not d_min:
+                nn_s = df[c].drop_nulls()
+                if len(nn_s) > 0:
+                    d_min, d_max = str(nn_s.min()), str(nn_s.max())
+            nn_note = f", {non_null:,} non-null" if non_null is not None else ""
+            detail = f"POPULATED DATE ({dtype}{nn_note}; {d_min}..{d_max})"
+        elif is_num_dtype or role in ("numeric_measure", "numeric_attribute"):
+            nn_note = f", {non_null:,} non-null" if non_null is not None else ""
+            min_v, max_v, avg_v = prof.get("min"), prof.get("max"), prof.get("mean")
+            if df is not None and c in df.columns and min_v is None:
+                nn_s = df[c].drop_nulls().cast(pl.Float64)
+                if len(nn_s) > 0:
+                    min_v = round(float(nn_s.min()), 2)
+                    max_v = round(float(nn_s.max()), 2)
+                    avg_v = round(float(nn_s.mean()), 2)
+            detail = f"POPULATED NUMERIC ({dtype}{nn_note}) [min={min_v}, max={max_v}, avg={avg_v}]"
         elif prof.get("top_values"):
             examples = ", ".join(str(v["value"]) for v in prof["top_values"][:4])
-            detail = f"{dtype} ({prof.get('unique_count')} unique; e.g. {examples})"
+            nn_note = f"{non_null:,} non-null, " if non_null is not None else ""
+            detail = f"{dtype} ({nn_note}{prof.get('unique_count')} unique; e.g. {examples})"
+        elif df is not None and c in df.columns:
+            nn_s = df[c].drop_nulls()
+            sample_vals = [str(v) for v in nn_s.head(4).to_list()]
+            u_cnt = int(nn_s.n_unique())
+            detail = f"{dtype} ({non_null:,} non-null, {u_cnt:,} unique; e.g. {', '.join(sample_vals)})"
         else:
             detail = f"{dtype} — {col_semantics.get(c, '')[:70]}"
         lines.append(f'- "{c}": {detail}')
+    if empty_cols:
+        lines.append(
+            f"EMPTY / 100%-NULL COLUMNS (contain ZERO values in this file — NEVER reference or CAST them in SQL): {', '.join(empty_cols)}"
+        )
     return "\n".join(lines)
 
 
@@ -2155,14 +2273,14 @@ async def plan_analysis_with_cot(
     col_semantics: Dict[str, str],
     col_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
     recent_history: Optional[List[Dict[str, str]]] = None,
+    use_cot: bool = True,
+    require_ollama: bool = True,
 ) -> Tuple[Optional[str], Dict[str, Any], List[Dict[str, str]], Optional[str]]:
     """
-    Chain-of-Thought (CoT) Analytical Planner!
-    1. Dynamically grounds user terms & actual cell values against ANY dataset's schema.
-    2. Prompts Gemma to generate step-by-step `reasoning_steps` BEFORE emitting `tool` & `arguments`
-       (and optional `secondary_sql` for baseline/context enrichment).
-    3. Falls back to a dynamic schema-driven CoT + DuckDB SQL synthesizer when offline.
-    Returns: (tool_name, arguments, cot_steps, secondary_sql)
+    Analytical Planner with optional Chain-of-Thought (CoT).
+    Stateless across turns (never relies on conversation memory) and always operates
+    across the entire uploaded dataset. Raises OllamaUnavailableError when require_ollama=True
+    and Ollama is unreachable or fails to respond.
     """
     query_lower = query.lower().strip()
     col_map = dataset.column_mapping or {}
@@ -2181,6 +2299,8 @@ async def plan_analysis_with_cot(
             "numeric_predicates": [],
         }
 
+    total_dataset_rows = len(duck_df) if duck_df is not None else (dataset.row_count or 0)
+
     csv_export_intent = (
         any(ext in query_lower for ext in ("csv", "excel", "xlsx", "spreadsheet"))
         and any(v in query_lower for v in ("generate", "create", "export", "download", "make", "give", "save", "extract", "build", "prepare", "output", "produce"))
@@ -2195,13 +2315,9 @@ async def plan_analysis_with_cot(
         )
     ) and not csv_export_intent
 
-    schema_block = _build_schema_context_for_agent(available_columns, col_semantics, col_profiles)
-    history_block = ""
-    if recent_history:
-        turns_str = "\n".join(f"{m['role'].upper()}: {m['content'][:220]}" for m in recent_history[-4:])
-        history_block = f"\nRECENT CONVERSATION CONTEXT:\n{turns_str}\n"
+    schema_block = _build_schema_context_for_agent(available_columns, col_semantics, col_profiles, df=duck_df)
 
-    grounding_hint_parts = [f"Dataset Grain: {row_grain}"]
+    grounding_hint_parts = [f"Dataset Grain: {row_grain} (TOTAL ROWS IN `data`: {total_dataset_rows:,})"]
     if grounded["mentioned_measures"]:
         m_notes = [
             f'"{m}" ({"non-additive -> prefer AVG" if _is_non_additive_metric(m) else "additive -> SUM or AVG"})'
@@ -2216,25 +2332,22 @@ async def plan_analysis_with_cot(
         grounding_hint_parts.append(f"Detected numeric predicates: {grounded['numeric_predicates']}")
     grounding_hint = "\n".join(grounding_hint_parts)
 
-    cot_steps: List[Dict[str, str]] = [
-        {
+    cot_steps: List[Dict[str, str]] = []
+    if use_cot:
+        cot_steps.append({
             "phase": "Schema & Value Grounding",
             "thought": grounding_hint.replace("\n", " • "),
-        }
-    ]
+        })
 
-    system_prompt = (
-        "You are a Principal AI Data Analyst capable of analyzing ANY dataset from ANY industry or domain "
-        "(finance, healthcare, SaaS, HR, real estate, IoT, retail, operations, science) via DuckDB SQL and statistical models.\n"
-        "You MUST think step-by-step using Chain-of-Thought (`reasoning_steps`) BEFORE selecting the tool and arguments.\n\n"
-        "CHAIN-OF-THOUGHT PROTOCOL (write `reasoning_steps` FIRST in JSON):\n"
-        "- Step 1 (Intent): Identify the exact analytical question, metric(s), dimensions, time horizon, or file transformation requested.\n"
-        "- Step 2 (Column & Math Logic): Map user terms to exact column names in `data`. Decide whether each metric is additive (`SUM`) or a rate/price/average/score (`AVG`). Guard division with `NULLIF(x, 0)`.\n"
-        "- Step 3 (Execution Plan): Formulate the precise DuckDB SQL (`run_sql_query` / `generate_csv_export`) or statistical tool (`forecast_future`, `analyze_correlations`, `detect_anomalies`, etc.).\n\n"
+    # ── Build the tools list block (shared between COT and fast mode) ──
+    tools_block = (
         "AVAILABLE TOOLS:\n"
         "1. run_sql_query: Preferred for ANY custom, multi-condition, time-trend (yearly/quarterly/monthly), grouped, ratio, percentage, HAVING, window-function, DISTINCT, or comparative query on `data`.\n"
         "   Args: {\"sql\": \"SELECT ... FROM data ...\", \"title\": \"Short result title\"}\n"
-        "   SQL RULES: Table is ALWAYS `data`. Wrap EVERY column name in double quotes (e.g. \"MA\", \"Sale Qty\"). Date columns are native DATE type.\n"
+        f"   SQL RULES: Table is ALWAYS `data` (containing ALL {total_dataset_rows:,} rows). Wrap EVERY column name in double quotes (e.g. \"MA\", \"Sale Qty\"). Date columns are native DATE type.\n"
+        "   COLUMN SAFETY RULE: ONLY pass POPULATED NUMERIC columns to SUM/AVG/MIN/MAX. NEVER aggregate EMPTY / 100% NULL columns or plain text columns.\n"
+        "   DUCKDB DATE RULE: NEVER use 2-arg DATE(a, b) or compare a DATE column directly to integer years (e.g. \"Bill Date\" BETWEEN 2024 AND 2026 is INVALID). Use EXTRACT(YEAR FROM \"col\") BETWEEN 2024 AND 2026, DATE_TRUNC('year', \"col\"), STRFTIME(\"col\", '%Y-%m'), or \"col\" >= (SELECT MAX(\"col\") FROM data) - INTERVAL '3 years'.\n"
+        "   FULL-DATASET RULE: ALWAYS calculate aggregations across the ENTIRE `data` table (all rows). NEVER use LIMIT inside subqueries or before aggregations, and ONLY use LIMIT N if the user explicitly asked for Top N / Bottom N.\n"
         "2. forecast_future: Future time-series predictions with 80% confidence bands.\n"
         "   Args: {\"target_metric\": str|null, \"horizon\": int|null, \"filter_column\": str|null, \"filter_value\": str|null}\n"
         "3. generate_csv_export: Generate & export a new downloadable CSV/Excel file from a transformation/filter/summary.\n"
@@ -2246,24 +2359,50 @@ async def plan_analysis_with_cot(
         "8. column_distribution_stats: Mean, median, std, p25, p75, min, max of 1 column. Args: {\"column\": str}\n"
         "9. compare_groups: Compare 2-5 entities in 1 dimension. Args: {\"dimension\": str, \"entities\": [str, ...]}\n"
         "10. inspect_raw_sample: View raw matching rows. Args: {\"search_column\": str|null, \"keyword\": str|null, \"limit\": int}\n"
-        "11. inventory_status_lookup: Reorder points & stockout risk (only if inventory forecasts exist). Args: {\"product_query\": str|null, \"risk_filter\": str|null}\n\n"
-        f"DATASET SCHEMA (`data` table, {len(available_columns)} columns):\n{schema_block}\n\n"
-        f"DYNAMIC GROUNDING HINTS:\n{grounding_hint}\n"
-        f"{history_block}\n"
-        "Respond ONLY with valid JSON in this exact field order:\n"
-        "{\n"
-        "  \"reasoning_steps\": [\"Step 1: ...\", \"Step 2: ...\", \"Step 3: ...\"],\n"
-        "  \"tool\": \"tool_name\" | null,\n"
-        "  \"arguments\": {...},\n"
-        "  \"secondary_sql\": \"Optional second DuckDB SELECT query for baseline/total context\" | null\n"
-        "}"
+        "11. inventory_status_lookup: Reorder points & stockout risk (only if inventory forecasts exist). Args: {\"product_query\": str|null, \"risk_filter\": str|null}\n"
     )
 
-    user_prompt = f"User Request: \"{query}\"\nGenerate Chain-of-Thought JSON plan:"
+    if use_cot:
+        # ── COT MODE: full reasoning chain before tool selection ──
+        system_prompt = (
+            "You are a Principal AI Data Analyst capable of analyzing ANY dataset from ANY industry or domain "
+            "(finance, healthcare, SaaS, HR, real estate, IoT, retail, operations, science) via DuckDB SQL and statistical models.\n"
+            "CRITICAL: You have NO memory of previous calculations. Always compute every answer fresh by selecting a tool to run on the ENTIRE dataset.\n"
+            "You MUST think step-by-step using Chain-of-Thought (`reasoning_steps`) BEFORE selecting the tool and arguments.\n\n"
+            "CHAIN-OF-THOUGHT PROTOCOL (write `reasoning_steps` FIRST in JSON):\n"
+            "- Step 1 (Intent): Identify the exact analytical question, metric(s), dimensions, time horizon, or file transformation requested.\n"
+            "- Step 2 (Column & Math Logic): Map user terms to exact column names in `data`. Decide whether each metric is additive (`SUM`) or a rate/price/average/score (`AVG`). Guard division with `NULLIF(x, 0)`.\n"
+            "- Step 3 (Execution Plan): Formulate the precise DuckDB SQL (`run_sql_query` / `generate_csv_export`) over ALL rows or statistical tool (`forecast_future`, `analyze_correlations`, `detect_anomalies`, etc.).\n\n"
+            f"{tools_block}\n"
+            f"DATASET SCHEMA (`data` table, {len(available_columns)} columns, {total_dataset_rows:,} rows):\n{schema_block}\n\n"
+            f"DYNAMIC GROUNDING HINTS:\n{grounding_hint}\n\n"
+            "Respond ONLY with valid JSON in this exact field order:\n"
+            "{\n"
+            "  \"reasoning_steps\": [\"Step 1: ...\", \"Step 2: ...\", \"Step 3: ...\"],\n"
+            "  \"tool\": \"tool_name\" | null,\n"
+            "  \"arguments\": {...},\n"
+            "  \"secondary_sql\": \"Optional second DuckDB SELECT query for baseline/total context\" | null\n"
+            "}"
+        )
+        user_prompt = f"User Request: \"{query}\"\nGenerate Chain-of-Thought JSON plan:"
+    else:
+        # ── FAST MODE: direct tool selection, no reasoning overhead ──
+        system_prompt = (
+            "You are a data analyst. Select the best tool and arguments to calculate the answer across the ENTIRE dataset.\n"
+            "CRITICAL: Always compute fresh from `data` (never rely on memory).\n\n"
+            f"{tools_block}\n"
+            f"DATASET SCHEMA (`data` table, {len(available_columns)} columns, {total_dataset_rows:,} rows):\n{schema_block}\n\n"
+            f"GROUNDING: {grounding_hint}\n\n"
+            "Respond ONLY with valid JSON:\n"
+            "{\"tool\": \"tool_name\", \"arguments\": {...}, \"secondary_sql\": null}"
+        )
+        user_prompt = f"Query: \"{query}\"\nSelect tool:"
+
     valid_tool_names = {t["name"] for t in TOOL_DEFINITIONS}
 
     try:
-        async with httpx.AsyncClient(timeout=14.0) as client:
+        timeout = 60.0
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{settings.OLLAMA_URL}/api/generate",
                 json={
@@ -2275,9 +2414,15 @@ async def plan_analysis_with_cot(
                     "options": {"temperature": 0.0},
                 },
             )
-            if resp.status_code == 200:
-                raw = resp.json().get("response", "").strip()
-                parsed = json.loads(raw)
+            if resp.status_code != 200:
+                raise OllamaUnavailableError(
+                    f"Ollama model '{settings.OLLAMA_MODEL}' returned HTTP {resp.status_code} at {settings.OLLAMA_URL}."
+                )
+            raw = resp.json().get("response", "").strip()
+            parsed = json.loads(raw)
+
+            # Extract reasoning steps only in COT mode
+            if use_cot:
                 llm_thoughts = parsed.get("reasoning_steps") or []
                 if isinstance(llm_thoughts, list):
                     for idx, step_txt in enumerate(llm_thoughts[:4]):
@@ -2286,29 +2431,39 @@ async def plan_analysis_with_cot(
                                 "phase": f"CoT Step {idx + 1}",
                                 "thought": str(step_txt).strip(),
                             })
-                tool = parsed.get("tool")
-                args = parsed.get("arguments") or {}
-                sec_sql = parsed.get("secondary_sql")
-                if isinstance(sec_sql, str) and not sec_sql.strip():
-                    sec_sql = None
 
-                if csv_export_intent and tool != "generate_csv_export":
-                    sql_candidate = args.get("sql") if tool == "run_sql_query" else None
-                    return (
-                        "generate_csv_export",
-                        {
-                            "sql": sql_candidate,
-                            "filename_slug": args.get("filename_slug") or "generated_data",
-                            "include_forecasts": any(w in query_lower for w in ("forecast", "predict", "future")),
-                            "description": f"Generated CSV for: {query[:60]}",
-                        },
-                        cot_steps,
-                        None,
-                    )
-                if tool and tool in valid_tool_names:
-                    return tool, args, cot_steps, sec_sql
+            tool = parsed.get("tool")
+            args = parsed.get("arguments") or {}
+            sec_sql = parsed.get("secondary_sql")
+            if isinstance(sec_sql, str) and not sec_sql.strip():
+                sec_sql = None
+
+            if csv_export_intent and tool != "generate_csv_export":
+                sql_candidate = args.get("sql") if tool == "run_sql_query" else None
+                return (
+                    "generate_csv_export",
+                    {
+                        "sql": sql_candidate,
+                        "filename_slug": args.get("filename_slug") or "generated_data",
+                        "include_forecasts": any(w in query_lower for w in ("forecast", "predict", "future")),
+                        "description": f"Generated CSV for: {query[:60]}",
+                    },
+                    cot_steps,
+                    None,
+                )
+            if tool and tool in valid_tool_names:
+                return tool, args, cot_steps, sec_sql
+            if require_ollama:
+                return None, {}, cot_steps, None
+    except OllamaUnavailableError:
+        if require_ollama:
+            raise
     except Exception as e:
-        logger.warning(f"Gemma CoT planning fallback triggered: {e}")
+        logger.warning(f"Gemma {'CoT' if use_cot else 'fast'} planning error: {e}")
+        if require_ollama:
+            raise OllamaUnavailableError(
+                f"Ollama model '{settings.OLLAMA_MODEL}' at {settings.OLLAMA_URL} is unavailable or not responding: {e}"
+            ) from e
 
     # ── Dynamic Schema-Driven CoT Planner (100% dataset-agnostic, works offline!) ──
     if csv_export_intent:
